@@ -8,6 +8,7 @@
     <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+    <script src="./assets/qrcode.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
     <script>
@@ -128,6 +129,24 @@
         }
 
         body.receipt-printing .screen-only {
+          display: none !important;
+        }
+
+        body.public-receipt-page {
+          background: #fff;
+          color: #111;
+        }
+
+        body.public-receipt-page #public-receipt-print-area {
+          width: 80mm;
+          max-width: none;
+          margin: 0;
+          border: 0 !important;
+          border-radius: 0 !important;
+          box-shadow: none !important;
+        }
+
+        body.public-receipt-page .screen-only {
           display: none !important;
         }
 
@@ -928,6 +947,271 @@
         return `${window.location.origin}${window.location.pathname}`;
       }
 
+      function compactReceiptPayload(receipt, settings) {
+        return {
+          v: 1,
+          b: settings?.businessName || defaultSettings.businessName,
+          o: String(receipt?.orderNumber || ""),
+          t: receipt?.tableId || "",
+          m: String(receipt?.method || ""),
+          d: receipt?.paidAt || new Date().toISOString(),
+          i: (receipt?.items || []).map((item) => ({
+            n: String(item.name || "Item"),
+            q: Number(item.qty || 0),
+            p: Number(item.price || 0),
+            a: (item.addons || []).map((addon) => [String(addon.name || "Add-on"), Number(addon.price || 0)]),
+            x: String(item.note || ""),
+          })),
+          s: Number(receipt?.subtotal || 0),
+          c: Number(receipt?.discount || 0),
+          cp: Number(receipt?.discountPercent || 0),
+          ct: String(receipt?.discountType || "none"),
+          ca: Number(receipt?.discountAmount || 0),
+          g: Number(receipt?.total || 0),
+        };
+      }
+
+      function receiptShareUrl(receipt, settings) {
+        const token = toBase64Url(JSON.stringify(compactReceiptPayload(receipt, settings)));
+        return `${posPublicUrl()}?receipt=${token}`;
+      }
+
+      function publicReceiptFromUrl() {
+        try {
+          const token = new URLSearchParams(window.location.search).get("receipt");
+          if (!token) return null;
+          const data = JSON.parse(fromBase64Url(token));
+          if (data?.v !== 1 || !Array.isArray(data.i)) return null;
+          return {
+            businessName: String(data.b || defaultSettings.businessName),
+            orderNumber: String(data.o || ""),
+            tableId: data.t || "",
+            method: String(data.m || ""),
+            paidAt: data.d || new Date().toISOString(),
+            items: data.i.map((item, index) => ({
+              id: `digital-${index}`,
+              name: String(item.n || "Item"),
+              qty: Number(item.q || 0),
+              price: Number(item.p || 0),
+              note: String(item.x || ""),
+              addons: Array.isArray(item.a)
+                ? item.a.map((addon, addonIndex) => ({
+                    id: `digital-addon-${index}-${addonIndex}`,
+                    name: String(addon?.[0] || "Add-on"),
+                    price: Number(addon?.[1] || 0),
+                  }))
+                : [],
+            })),
+            subtotal: Number(data.s || 0),
+            discount: Number(data.c || 0),
+            discountPercent: Number(data.cp || 0),
+            discountType: String(data.ct || "none"),
+            discountAmount: Number(data.ca || 0),
+            total: Number(data.g || 0),
+          };
+        } catch (error) {
+          return null;
+        }
+      }
+
+      const BLUETOOTH_PRINTER_SERVICES = [
+        "000018f0-0000-1000-8000-00805f9b34fb",
+        "0000ff00-0000-1000-8000-00805f9b34fb",
+        "0000ffe0-0000-1000-8000-00805f9b34fb",
+        "0000fff0-0000-1000-8000-00805f9b34fb",
+        "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+        "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+        "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
+      ];
+      let bluetoothPrinterSession = null;
+
+      function wait(milliseconds) {
+        return new Promise((resolve) => setTimeout(resolve, milliseconds));
+      }
+
+      function joinBytes(parts) {
+        const length = parts.reduce((total, part) => total + part.length, 0);
+        const result = new Uint8Array(length);
+        let offset = 0;
+        parts.forEach((part) => {
+          result.set(part, offset);
+          offset += part.length;
+        });
+        return result;
+      }
+
+      function receiptText(receipt, settings) {
+        const width = 32;
+        const divider = "-".repeat(width);
+        const columns = (left, right) => {
+          const leftText = String(left || "");
+          const rightText = String(right || "");
+          const space = Math.max(1, width - leftText.length - rightText.length);
+          return `${leftText}${" ".repeat(space)}${rightText}`;
+        };
+        const lines = [
+          settings?.businessName || defaultSettings.businessName,
+          `Receipt #${receipt.orderNumber}`,
+          displayDateTime(receipt.paidAt),
+          divider,
+          columns("Order", receipt.orderNumber),
+          columns("Table", receipt.tableId ? `Table ${receipt.tableId}` : "Takeaway"),
+          columns("Payment", receipt.method),
+          divider,
+        ];
+
+        (receipt.items || []).forEach((item) => {
+          lines.push(`${item.qty}x ${item.name}`);
+          lines.push(columns("", money(lineTotal(item))));
+          (item.addons || []).forEach((addon) => {
+            lines.push(columns(` + ${addon.name}`, money(Number(addon.price || 0) * Number(item.qty || 0))));
+          });
+          if (item.note) lines.push(` Note: ${item.note}`);
+        });
+
+        lines.push(divider);
+        lines.push(columns("Subtotal", money(receipt.subtotal)));
+        if (Number(receipt.discount || 0) > 0) {
+          lines.push(columns(discountLabel(receipt), `-${money(receipt.discount)}`));
+        }
+        lines.push(columns("TOTAL", money(receipt.total)));
+        lines.push(divider, "Scan QR for digital receipt", "Thank you. Please come again.");
+        return lines.join("\n");
+      }
+
+      function escPosQrBytes(value) {
+        const data = new TextEncoder().encode(value);
+        const storeLength = data.length + 3;
+        return joinBytes([
+          Uint8Array.from([0x1d, 0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]),
+          Uint8Array.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, 0x05]),
+          Uint8Array.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31]),
+          Uint8Array.from([0x1d, 0x28, 0x6b, storeLength & 0xff, (storeLength >> 8) & 0xff, 0x31, 0x50, 0x30]),
+          data,
+          Uint8Array.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]),
+        ]);
+      }
+
+      function bluetoothTestBytes(businessName) {
+        const encoder = new TextEncoder();
+        return joinBytes([
+          Uint8Array.from([0x1b, 0x40, 0x1b, 0x61, 0x01, 0x1b, 0x45, 0x01]),
+          encoder.encode(`${businessName || defaultSettings.businessName}\n`),
+          Uint8Array.from([0x1b, 0x45, 0x00]),
+          encoder.encode(`Bluetooth Printer Test\n${displayDateTime()}\n\nPrint test successful\n\n\n`),
+          Uint8Array.from([0x1d, 0x56, 0x00]),
+        ]);
+      }
+
+      function bluetoothReceiptBytes(receipt, settings) {
+        const encoder = new TextEncoder();
+        return joinBytes([
+          Uint8Array.from([0x1b, 0x40, 0x1b, 0x61, 0x00]),
+          encoder.encode(`${receiptText(receipt, settings)}\n\n`),
+          Uint8Array.from([0x1b, 0x61, 0x01]),
+          escPosQrBytes(receiptShareUrl(receipt, settings)),
+          encoder.encode("\n\n"),
+          Uint8Array.from([0x1d, 0x56, 0x00]),
+        ]);
+      }
+
+      async function connectBluetoothPrinter() {
+        if (!navigator.bluetooth) {
+          throw new Error("This iPad/iPhone browser blocks direct Bluetooth printing. Use Print Receipt with AirPrint, or let the customer scan the receipt QR.");
+        }
+
+        const device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: BLUETOOTH_PRINTER_SERVICES,
+        });
+        if (!device.gatt) throw new Error("The selected device does not provide a Bluetooth print connection.");
+        const server = await device.gatt.connect();
+        const services = await server.getPrimaryServices();
+        let characteristic = null;
+
+        for (const service of services) {
+          const characteristics = await service.getCharacteristics();
+          characteristic = characteristics.find(
+            (item) => item.properties.write || item.properties.writeWithoutResponse
+          );
+          if (characteristic) break;
+        }
+
+        if (!characteristic) {
+          device.gatt.disconnect();
+          throw new Error("Printer found, but no compatible BLE printing channel was available. Send a photo of the printer model label for exact setup.");
+        }
+
+        bluetoothPrinterSession = { device, characteristic };
+        device.addEventListener("gattserverdisconnected", () => {
+          if (bluetoothPrinterSession?.device === device) bluetoothPrinterSession = null;
+        });
+        return bluetoothPrinterSession;
+      }
+
+      async function writeBluetoothPrinter(bytes) {
+        const session = bluetoothPrinterSession;
+        if (!session?.device?.gatt?.connected || !session.characteristic) {
+          throw new Error("Bluetooth printer is not connected.");
+        }
+
+        for (let offset = 0; offset < bytes.length; offset += 20) {
+          const chunk = bytes.slice(offset, offset + 20);
+          if (session.characteristic.properties.writeWithoutResponse && session.characteristic.writeValueWithoutResponse) {
+            await session.characteristic.writeValueWithoutResponse(chunk);
+          } else if (session.characteristic.writeValueWithResponse) {
+            await session.characteristic.writeValueWithResponse(chunk);
+          } else {
+            await session.characteristic.writeValue(chunk);
+          }
+          await wait(24);
+        }
+      }
+
+      async function ensureBluetoothPrinter() {
+        if (!bluetoothPrinterSession?.device?.gatt?.connected) await connectBluetoothPrinter();
+        return bluetoothPrinterSession;
+      }
+
+      function hasAndroidPrinterBridge() {
+        return Boolean(window.AndroidPrinter?.getPairedDevices && window.AndroidPrinter?.printBase64);
+      }
+
+      function bytesToBase64(bytes) {
+        let binary = "";
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        }
+        return btoa(binary);
+      }
+
+      function parseAndroidPrinterResult(value) {
+        try {
+          const result = typeof value === "string" ? JSON.parse(value) : value;
+          if (!result?.ok) throw new Error(result?.message || "Android printer operation failed.");
+          return result;
+        } catch (error) {
+          if (error instanceof SyntaxError) throw new Error(String(value || "Android printer operation failed."));
+          throw error;
+        }
+      }
+
+      function getAndroidPairedPrinters() {
+        if (!hasAndroidPrinterBridge()) return [];
+        const result = parseAndroidPrinterResult(window.AndroidPrinter.getPairedDevices());
+        return Array.isArray(result.devices) ? result.devices : [];
+      }
+
+      function connectAndroidPrinter(address) {
+        if (!hasAndroidPrinterBridge()) throw new Error("Open this POS in the Dennis.Phostop Android app to use native Bluetooth printing.");
+        return parseAndroidPrinterResult(window.AndroidPrinter.connect(String(address || "")));
+      }
+
+      function printAndroidBytes(bytes) {
+        if (!hasAndroidPrinterBridge()) throw new Error("Android printer bridge is not available.");
+        return parseAndroidPrinterResult(window.AndroidPrinter.printBase64(bytesToBase64(bytes)));
+      }
+
       function cloudSetupUrl(config) {
         const normalized = normalizeCloudConfig(config, true);
         const usesBuiltInCloud = ["restaurantId", "apiKey", "authDomain", "databaseURL", "projectId", "appId"]
@@ -1006,9 +1290,23 @@
         const discountPercent = [10, 15].includes(Number(order?.discountPercent))
           ? Number(order.discountPercent)
           : 0;
-        const discount = roundCurrency(subtotal * (discountPercent / 100));
+        const discountType = order?.discountType === "fixed" && Number(order?.discountAmount) > 0
+          ? "fixed"
+          : discountPercent > 0
+          ? "percent"
+          : "none";
+        const discountAmount = discountType === "fixed" ? Number(order.discountAmount) : 0;
+        const discount = roundCurrency(
+          Math.min(subtotal, discountType === "fixed" ? discountAmount : subtotal * (discountPercent / 100))
+        );
         const total = roundCurrency(Math.max(0, subtotal - discount));
-        return { subtotal, service: 0, gst: 0, discount, discountPercent, total };
+        return { subtotal, service: 0, gst: 0, discount, discountPercent, discountType, discountAmount, total };
+      }
+
+      function discountLabel(value) {
+        if (value?.discountType === "fixed") return `${money(value.discountAmount || value.discount)} Voucher`;
+        if (Number(value?.discountPercent || 0) > 0) return `Discount ${value.discountPercent}%`;
+        return "Discount";
       }
 
       function lineUnitPrice(item) {
@@ -1635,12 +1933,20 @@
           setView("kds");
         }
 
-        function updateDiscount(orderId, discountPercent) {
+        function updateDiscount(orderId, discountChoice) {
           setState((current) => ({
             ...current,
             orders: current.orders.map((order) =>
               order.id === orderId
-                ? { ...order, discount: 0, discountPercent: [10, 15].includes(Number(discountPercent)) ? Number(discountPercent) : 0 }
+                ? discountChoice === "voucher10"
+                  ? { ...order, discount: 0, discountPercent: 0, discountType: "fixed", discountAmount: 10 }
+                  : {
+                      ...order,
+                      discount: 0,
+                      discountPercent: [10, 15].includes(Number(discountChoice)) ? Number(discountChoice) : 0,
+                      discountType: [10, 15].includes(Number(discountChoice)) ? "percent" : "none",
+                      discountAmount: 0,
+                    }
                 : order
             ),
           }));
@@ -2505,23 +2811,33 @@
                 </div>
                 <div className="flex items-center justify-between gap-3 text-zinc-300">
                   <span>Discount</span>
-                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-ink p-1">
-                    {[0, 10, 15].map((percent) => (
+                  <div className="grid grid-cols-4 gap-1 rounded-lg border border-line bg-ink p-1">
+                    {[
+                      { value: 0, label: "None" },
+                      { value: 10, label: "10%" },
+                      { value: 15, label: "15%" },
+                      { value: "voucher10", label: "$10" },
+                    ].map((option) => {
+                      const selected = option.value === "voucher10"
+                        ? order?.discountType === "fixed" && Number(order?.discountAmount || 0) === 10
+                        : order?.discountType !== "fixed" && Number(order?.discountPercent || 0) === option.value;
+                      return (
                       <button
-                        key={percent}
+                        key={option.value}
                         type="button"
-                        onClick={() => onDiscount(percent)}
+                        onClick={() => onDiscount(option.value)}
                         disabled={!order}
                         className={cx(
-                          "min-h-10 min-w-16 rounded-md px-2 text-sm font-black disabled:opacity-40",
-                          Number(order?.discountPercent || 0) === percent
+                          "min-h-10 rounded-md px-2 text-sm font-black disabled:opacity-40",
+                          selected
                             ? "bg-orange text-black"
                             : "text-zinc-300"
                         )}
                       >
-                        {percent === 0 ? "None" : `${percent}%`}
+                        {option.label}
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
                 {totals.discount > 0 && (
@@ -2946,7 +3262,7 @@
                     </div>
                     {totals.discount > 0 && (
                       <div className="flex justify-between text-emerald-300">
-                        <span>Discount {totals.discountPercent}%</span>
+                        <span>{discountLabel(totals)}</span>
                         <span>-{money(totals.discount)}</span>
                       </div>
                     )}
@@ -5240,8 +5556,16 @@
         const [staffForm, setStaffForm] = useState(emptyStaffForm);
         const [cloudForm, setCloudForm] = useState({ ...defaultCloudConfig, ...(cloudConfig || {}) });
         const [cloudCopyMessage, setCloudCopyMessage] = useState("");
-        const [printerStatus, setPrinterStatus] = useState("Use system print for the most reliable receipt printing.");
+        const [printerStatus, setPrinterStatus] = useState(() =>
+          hasAndroidPrinterBridge()
+            ? "Android printer mode is ready. Pair MRBOSS E2000 in Redmi Bluetooth settings, then connect it here."
+            : navigator.bluetooth
+            ? "Bluetooth BLE printing is available in this browser. Connect the printer and send a real test slip."
+            : "Direct Bluetooth printing is blocked in this browser. Use AirPrint / system print or the digital receipt QR."
+        );
         const [testPrintAt, setTestPrintAt] = useState(null);
+        const [androidPrinters, setAndroidPrinters] = useState([]);
+        const [selectedAndroidPrinter, setSelectedAndroidPrinter] = useState("");
         const editingStaff = Boolean(staffForm.id);
         const syncTone =
           syncStatus.kind === "online"
@@ -5259,6 +5583,17 @@
         useEffect(() => {
           setCloudForm({ ...defaultCloudConfig, ...(cloudConfig || {}) });
         }, [cloudConfig]);
+
+        useEffect(() => {
+          if (!hasAndroidPrinterBridge()) return;
+          try {
+            const devices = getAndroidPairedPrinters();
+            setAndroidPrinters(devices);
+            if (devices.length) setSelectedAndroidPrinter((current) => current || devices[0].address);
+          } catch (error) {
+            setPrinterStatus(error?.message || "Could not read paired Android Bluetooth devices.");
+          }
+        }, []);
 
         function saveSettings() {
           setState((current) => ({
@@ -5331,27 +5666,50 @@
         }
 
         async function testBluetoothPrinter() {
-          if (!navigator.bluetooth) {
-            setPrinterStatus("Direct Bluetooth is not supported in this browser. Pair the printer in device settings, then use Print Receipt / system print.");
-            return;
-          }
-
           try {
-            setPrinterStatus("Choose your Bluetooth receipt printer...");
-            const device = await navigator.bluetooth.requestDevice({
-              acceptAllDevices: true,
-              optionalServices: [
-                "0000ff00-0000-1000-8000-00805f9b34fb",
-                "0000ffe0-0000-1000-8000-00805f9b34fb",
-                "0000fff0-0000-1000-8000-00805f9b34fb",
-              ],
-            });
-            if (device.gatt) {
-              await device.gatt.connect();
-            }
-            setPrinterStatus(`Bluetooth detected: ${device.name || "Receipt printer"}. If it does not print from the browser, use system print or AirPrint.`);
+            setPrinterStatus("Choose the Bluetooth BLE receipt printer. A test slip will print after connection...");
+            const session = await ensureBluetoothPrinter();
+            await writeBluetoothPrinter(bluetoothTestBytes(settingsForm.businessName));
+            setPrinterStatus(`Connected and test slip sent to ${session.device.name || "Bluetooth receipt printer"}. You can now use Bluetooth Print after payment.`);
           } catch (error) {
-            setPrinterStatus("Bluetooth connection cancelled or not compatible. Most iPad/iPhone browsers need AirPrint or system print.");
+            setPrinterStatus(
+              error?.name === "NotFoundError"
+                ? "Bluetooth selection was cancelled. No printer was connected."
+                : error?.message || "Bluetooth connection failed. Use AirPrint / system print or the receipt QR."
+            );
+          }
+        }
+
+        function refreshAndroidPrinters() {
+          try {
+            const devices = getAndroidPairedPrinters();
+            setAndroidPrinters(devices);
+            setSelectedAndroidPrinter((current) =>
+              devices.some((device) => device.address === current) ? current : devices[0]?.address || ""
+            );
+            setPrinterStatus(
+              devices.length
+                ? `${devices.length} paired Bluetooth device(s) found. Select MRBOSS E2000 and run the test.`
+                : "No paired printer found. Pair MRBOSS E2000 in Redmi Settings > Bluetooth, then press Refresh."
+            );
+          } catch (error) {
+            setPrinterStatus(error?.message || "Could not read paired Bluetooth devices.");
+          }
+        }
+
+        function connectAndTestAndroidPrinter() {
+          try {
+            if (!selectedAndroidPrinter) {
+              refreshAndroidPrinters();
+              setPrinterStatus("Select a paired MRBOSS E2000 printer first.");
+              return;
+            }
+            setPrinterStatus("Connecting to MRBOSS E2000...");
+            const connection = connectAndroidPrinter(selectedAndroidPrinter);
+            printAndroidBytes(bluetoothTestBytes(settingsForm.businessName));
+            setPrinterStatus(`Connected and test slip sent to ${connection.name || "MRBOSS E2000"}.`);
+          } catch (error) {
+            setPrinterStatus(error?.message || "Android Bluetooth printing failed.");
           }
         }
 
@@ -5426,16 +5784,57 @@
                     <div>
                       <h4 className="font-black">Printer Setup</h4>
                       <p className="mt-1 text-sm text-zinc-400">
-                        iPad direct print works through AirPrint / system print. Use an AirPrint receipt printer or Wi-Fi printer.
+                        Connect a compatible BLE ESC/POS printer in Chrome, or use AirPrint / system print on iPad.
                       </p>
                     </div>
-                    <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-bold text-emerald-200">
-                      iPad Ready
+                    <span className={cx(
+                      "rounded-full border px-3 py-1 text-xs font-bold",
+                      hasAndroidPrinterBridge()
+                        ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+                        : navigator.bluetooth
+                        ? "border-sky-400/30 bg-sky-500/10 text-sky-200"
+                        : "border-amber-400/30 bg-amber-500/10 text-amber-200"
+                    )}>
+                      {hasAndroidPrinterBridge() ? "Android Print Ready" : navigator.bluetooth ? "BLE Ready" : "QR / AirPrint"}
                     </span>
                   </div>
                   <div className="mt-4 rounded-lg border border-line bg-panel p-3 text-sm text-zinc-400">
                     {printerStatus}
                   </div>
+                  {hasAndroidPrinterBridge() ? (
+                    <div className="mt-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-4">
+                      <div className="font-black text-emerald-200">Android Native Printer / MRBOSS E2000</div>
+                      <div className="mt-1 text-xs leading-relaxed text-emerald-100/70">
+                        Pair the printer in Redmi Bluetooth settings once. Then select it below; the POS will print through classic Bluetooth SPP.
+                      </div>
+                      <select
+                        value={selectedAndroidPrinter}
+                        onChange={(event) => setSelectedAndroidPrinter(event.target.value)}
+                        className="mt-3 min-h-12 w-full rounded-lg border border-emerald-400/30 bg-ink px-3 text-white outline-none"
+                      >
+                        <option value="">Select paired printer</option>
+                        {androidPrinters.map((device) => (
+                          <option key={device.address} value={device.address}>
+                            {device.name || "Bluetooth device"} / {device.address}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <button
+                          onClick={refreshAndroidPrinters}
+                          className="min-h-12 rounded-lg border border-emerald-400/30 bg-ink font-bold text-emerald-200"
+                        >
+                          Refresh Paired Devices
+                        </button>
+                        <button
+                          onClick={connectAndTestAndroidPrinter}
+                          className="min-h-12 rounded-lg bg-emerald-400 font-black text-emerald-950"
+                        >
+                          Connect & Test E2000
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
                     <button
                       onClick={showPrinterGuide}
@@ -5453,11 +5852,11 @@
                       onClick={testBluetoothPrinter}
                       className="min-h-12 rounded-lg border border-sky-400/30 bg-sky-500/10 font-bold text-sky-200"
                     >
-                      Test Bluetooth
+                      Connect & Test Bluetooth
                     </button>
                   </div>
                   <div className="mt-3 text-xs leading-relaxed text-zinc-500">
-                    iPad/iPhone browsers cannot directly control most classic Bluetooth thermal printers. For direct iPad printing, choose a printer that appears in the iPad print window.
+                    Direct Bluetooth requires a BLE ESC/POS printer and a browser with Web Bluetooth. iPad/iPhone Safari and Chrome cannot control most ordinary Bluetooth thermal printers; use AirPrint, the printer maker's app, or the digital receipt QR instead.
                   </div>
                   {testPrintAt ? (
                     <div id="receipt-print-area" className="fixed -left-[9999px] top-0 w-full max-w-md rounded-lg border border-line bg-panel p-5 shadow-soft">
@@ -5717,10 +6116,72 @@
       }
 
       function ReceiptModal({ receipt, settings, onClose }) {
+        const shareUrl = useMemo(() => receiptShareUrl(receipt, settings), [receipt, settings]);
+        const qrRef = useRef(null);
+        const [shareStatus, setShareStatus] = useState("");
+        const [bluetoothStatus, setBluetoothStatus] = useState("");
+
         useEffect(() => {
           document.body.classList.add("receipt-printing");
           return () => document.body.classList.remove("receipt-printing");
         }, []);
+
+        useEffect(() => {
+          if (!qrRef.current) return;
+          qrRef.current.innerHTML = "";
+          if (!window.QRCode) {
+            setShareStatus("QR generator could not load. Use Copy Receipt Link instead.");
+            return;
+          }
+          try {
+            new window.QRCode(qrRef.current, {
+              text: shareUrl,
+              width: 168,
+              height: 168,
+              colorDark: "#000000",
+              colorLight: "#ffffff",
+              correctLevel: window.QRCode.CorrectLevel.M,
+            });
+          } catch (error) {
+            setShareStatus("This receipt is too large for a QR code. Use Copy Receipt Link instead.");
+          }
+        }, [shareUrl]);
+
+        async function copyReceiptLink() {
+          try {
+            await navigator.clipboard.writeText(shareUrl);
+            setShareStatus("Digital receipt link copied.");
+          } catch (error) {
+            window.prompt("Copy digital receipt link", shareUrl);
+            setShareStatus("Copy the receipt link from the popup.");
+          }
+        }
+
+        async function printWithBluetooth() {
+          try {
+            setBluetoothStatus("Choose or reconnect the Bluetooth printer...");
+            const session = await ensureBluetoothPrinter();
+            setBluetoothStatus(`Sending receipt to ${session.device.name || "Bluetooth printer"}...`);
+            await writeBluetoothPrinter(bluetoothReceiptBytes(receipt, settings));
+            setBluetoothStatus("Bluetooth receipt sent successfully.");
+          } catch (error) {
+            setBluetoothStatus(
+              error?.name === "NotFoundError"
+                ? "Bluetooth selection was cancelled."
+                : error?.message || "Bluetooth printing failed. Use Print Receipt or the QR receipt."
+            );
+          }
+        }
+
+        function printWithAndroid() {
+          try {
+            setBluetoothStatus("Sending receipt to the Android Bluetooth printer...");
+            const result = printAndroidBytes(bluetoothReceiptBytes(receipt, settings));
+            setBluetoothStatus(`Receipt sent to ${result.name || "MRBOSS E2000"}.`);
+          } catch (error) {
+            setBluetoothStatus(`${error?.message || "Android Bluetooth printing failed."} Open Setup > Printer Setup to connect MRBOSS E2000.`);
+          }
+        }
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-5">
@@ -5801,7 +6262,7 @@
                   </div>
                   {Number(receipt.discount || 0) > 0 && (
                     <div className="flex justify-between text-zinc-300">
-                      <span>Discount {receipt.discountPercent || ""}%</span>
+                      <span>{discountLabel(receipt)}</span>
                       <span>-{money(receipt.discount)}</span>
                     </div>
                   )}
@@ -5822,17 +6283,44 @@
                     </>
                   )}
                 </div>
+                <div className="mt-5 rounded-lg border border-zinc-300 bg-white p-4 text-center text-zinc-950">
+                  <div className="text-sm font-black">Scan for Digital Receipt</div>
+                  <div className="mt-1 text-xs text-zinc-500">Open with any phone camera</div>
+                  <div ref={qrRef} className="mx-auto mt-3 flex min-h-[184px] w-[184px] items-center justify-center bg-white p-2"></div>
+                  <button
+                    onClick={copyReceiptLink}
+                    className="screen-only mt-3 min-h-10 rounded-md border border-zinc-300 bg-white px-4 text-xs font-bold text-zinc-900"
+                  >
+                    Copy Receipt Link
+                  </button>
+                  {shareStatus ? <div className="screen-only mt-2 text-xs text-zinc-600">{shareStatus}</div> : null}
+                </div>
                 <div className="mt-5 border-t border-dashed border-line pt-4 text-center text-xs text-zinc-500">
                   Thank you. Please come again.
                 </div>
               </div>
-              <div className="screen-only mt-5 grid grid-cols-2 gap-3">
+              <div className="screen-only mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <button
                   onClick={() => window.print()}
                   className="min-h-14 rounded-lg bg-orange font-black text-black"
                 >
                   Print Receipt
                 </button>
+                {hasAndroidPrinterBridge() ? (
+                  <button
+                    onClick={printWithAndroid}
+                    className="min-h-14 rounded-lg border border-emerald-400/30 bg-emerald-500/10 font-black text-emerald-200"
+                  >
+                    Android Print
+                  </button>
+                ) : (
+                  <button
+                    onClick={printWithBluetooth}
+                    className="min-h-14 rounded-lg border border-sky-400/30 bg-sky-500/10 font-black text-sky-200"
+                  >
+                    Bluetooth Print
+                  </button>
+                )}
                 <button
                   onClick={onClose}
                   className="min-h-14 rounded-lg border border-line bg-ink font-black"
@@ -5840,8 +6328,95 @@
                   Close
                 </button>
               </div>
+              {bluetoothStatus ? (
+                <div className="screen-only mt-3 rounded-lg border border-line bg-ink p-3 text-xs leading-relaxed text-zinc-300">
+                  {bluetoothStatus}
+                </div>
+              ) : null}
             </div>
           </div>
+        );
+      }
+
+      function PublicReceiptView({ receipt }) {
+        useEffect(() => {
+          document.body.classList.add("public-receipt-page");
+          return () => document.body.classList.remove("public-receipt-page");
+        }, []);
+
+        return (
+          <main className="min-h-screen bg-zinc-100 px-4 py-6 text-zinc-950 sm:py-10">
+            <div id="public-receipt-print-area" className="mx-auto w-full max-w-md rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
+              <div className="text-center">
+                <div className="text-2xl font-black">{receipt.businessName}</div>
+                <div className="mt-1 text-xs font-semibold uppercase tracking-[.14em] text-zinc-500">Digital Receipt Copy</div>
+                <div className="mt-3 text-sm text-zinc-500">{displayDateTime(receipt.paidAt)}</div>
+              </div>
+
+              <div className="my-5 border-t border-dashed border-zinc-300"></div>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between gap-3">
+                  <span className="text-zinc-500">Receipt</span>
+                  <span className="font-bold">#{receipt.orderNumber}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-zinc-500">Table</span>
+                  <span>{receipt.tableId ? `Table ${receipt.tableId}` : "Takeaway"}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-zinc-500">Payment</span>
+                  <span>{receipt.method}</span>
+                </div>
+              </div>
+
+              <div className="my-5 border-t border-dashed border-zinc-300"></div>
+              <div className="space-y-4">
+                {receipt.items.map((item) => (
+                  <div key={item.id} className="text-sm">
+                    <div className="flex justify-between gap-4 font-semibold">
+                      <span>{item.qty}x {item.name}</span>
+                      <span>{money(lineTotal(item))}</span>
+                    </div>
+                    {(item.addons || []).map((addon) => (
+                      <div key={addon.id} className="mt-1 flex justify-between gap-4 pl-4 text-xs text-zinc-500">
+                        <span>+ {addon.name}</span>
+                        <span>{money(Number(addon.price || 0) * Number(item.qty || 0))}</span>
+                      </div>
+                    ))}
+                    {item.note ? <div className="mt-1 pl-4 text-xs text-zinc-500">Note: {item.note}</div> : null}
+                  </div>
+                ))}
+              </div>
+
+              <div className="my-5 border-t border-dashed border-zinc-300"></div>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-zinc-500">Subtotal</span>
+                  <span>{money(receipt.subtotal)}</span>
+                </div>
+                {Number(receipt.discount || 0) > 0 ? (
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">{discountLabel(receipt)}</span>
+                    <span>-{money(receipt.discount)}</span>
+                  </div>
+                ) : null}
+                <div className="flex justify-between pt-2 text-2xl font-black">
+                  <span>Total</span>
+                  <span>{money(receipt.total)}</span>
+                </div>
+              </div>
+
+              <div className="mt-6 border-t border-dashed border-zinc-300 pt-4 text-center text-xs text-zinc-500">
+                Thank you. Please come again.
+              </div>
+              <button
+                onClick={() => window.print()}
+                className="screen-only mt-6 min-h-14 w-full rounded-lg bg-zinc-950 font-black text-white"
+              >
+                Save / Print Receipt
+              </button>
+            </div>
+          </main>
         );
       }
 
@@ -6019,7 +6594,12 @@
         );
       }
 
-      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+      function Root() {
+        const publicReceipt = publicReceiptFromUrl();
+        return publicReceipt ? <PublicReceiptView receipt={publicReceipt} /> : <App />;
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
     </script>
   </body>
 </html>
