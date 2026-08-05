@@ -221,13 +221,12 @@
       const SETTINGS_VERSION = "dennis-phostop-v1";
       const STAFF_VERSION = "phostop-staff-v3-seng-manager";
       const TABLE_COUNT = 30;
-      const TAX_RATE = 0.09;
-      const SERVICE_RATE = 0.1;
       const CATEGORIES = [
         "Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals",
         "Dessert", "Coffee", "Drinks", "Tea", "Add-ons", "Set Upgrade", "Set Drinks", "Packaging",
       ];
       const ORDER_NOTES = ["No spicy", "Less ice", "No onion"];
+      const ADDON_ELIGIBLE_CATEGORIES = ["Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals"];
       const SET_DRINK_OPTIONS = [
         ["Coke", 0], ["Coke Zero", 0], ["Hot Ginger", 0], ["Ayataka Green Tea", 0],
         ["Hot Earl Grey", 0], ["GOLD Tonic Water", 0], ["Dasani Drinking Water", 0],
@@ -1003,12 +1002,22 @@
       }
 
       function calcOrder(order) {
-        const subtotal = roundCurrency((order?.items || []).reduce((sum, item) => sum + item.price * item.qty, 0));
-        const discount = roundCurrency(order?.discount || 0);
-        const service = roundCurrency(subtotal * SERVICE_RATE);
-        const gst = roundCurrency((subtotal + service - discount) * TAX_RATE);
-        const total = roundCurrency(Math.max(0, subtotal + service + gst - discount));
-        return { subtotal, service, gst, discount, total };
+        const subtotal = roundCurrency((order?.items || []).reduce((sum, item) => sum + lineTotal(item), 0));
+        const discountPercent = [10, 15].includes(Number(order?.discountPercent))
+          ? Number(order.discountPercent)
+          : 0;
+        const discount = roundCurrency(subtotal * (discountPercent / 100));
+        const total = roundCurrency(Math.max(0, subtotal - discount));
+        return { subtotal, service: 0, gst: 0, discount, discountPercent, total };
+      }
+
+      function lineUnitPrice(item) {
+        const addOnTotal = (item?.addons || []).reduce((sum, addon) => sum + Number(addon.price || 0), 0);
+        return roundCurrency(Number(item?.price || 0) + addOnTotal);
+      }
+
+      function lineTotal(item) {
+        return roundCurrency(lineUnitPrice(item) * Number(item?.qty || 0));
       }
 
       function statusClass(status) {
@@ -1452,6 +1461,7 @@
             tableId,
             items: [],
             discount: 0,
+            discountPercent: 0,
             status: "Open",
             createdAt: new Date().toISOString(),
           };
@@ -1475,6 +1485,7 @@
             tableId: null,
             items: [],
             discount: 0,
+            discountPercent: 0,
             status: "Open",
             createdAt: new Date().toISOString(),
           };
@@ -1495,9 +1506,16 @@
           }));
         }
 
-        function addItem(menuItem) {
+        function addItem(menuItem, selectedAddons = []) {
           if (menuItem.soldOut) return;
           const presetNote = menuItem.orderNote || "";
+          const addons = selectedAddons.map((addon) => ({
+            id: addon.id,
+            menuId: addon.id,
+            name: addon.name,
+            price: Number(addon.price || 0),
+          }));
+          const addonSignature = addons.map((addon) => addon.id).sort().join("|");
           let orderId = activeOrderId;
 
           setState((current) => {
@@ -1514,6 +1532,7 @@
                 tableId,
                 items: [],
                 discount: 0,
+                discountPercent: 0,
                 status: "Open",
                 createdAt: new Date().toISOString(),
               };
@@ -1526,7 +1545,12 @@
 
             const nextOrders = orders.map((item) => {
               if (item.id !== order.id) return item;
-              const existing = item.items.find((line) => line.menuId === menuItem.id && line.note === presetNote);
+              const existing = item.items.find(
+                (line) =>
+                  line.menuId === menuItem.id &&
+                  line.note === presetNote &&
+                  (line.addons || []).map((addon) => addon.id).sort().join("|") === addonSignature
+              );
               const lines = existing
                 ? item.items.map((line) =>
                     line.id === existing.id ? { ...line, qty: line.qty + 1 } : line
@@ -1542,6 +1566,7 @@
                       image: menuItem.image,
                       qty: 1,
                       note: presetNote,
+                      addons,
                     },
                   ];
               return { ...item, items: lines, status: item.status === "Held" ? "Open" : item.status };
@@ -1610,11 +1635,13 @@
           setView("kds");
         }
 
-        function updateDiscount(orderId, discount) {
+        function updateDiscount(orderId, discountPercent) {
           setState((current) => ({
             ...current,
             orders: current.orders.map((order) =>
-              order.id === orderId ? { ...order, discount: Math.max(0, Number(discount || 0)) } : order
+              order.id === orderId
+                ? { ...order, discount: 0, discountPercent: [10, 15].includes(Number(discountPercent)) ? Number(discountPercent) : 0 }
+                : order
             ),
           }));
         }
@@ -1908,6 +1935,12 @@
                     onNote={(lineId, note) =>
                       activeOrder && updateLine(activeOrder.id, lineId, () => ({ note }))
                     }
+                    onRemoveAddon={(lineId, addonId) =>
+                      activeOrder &&
+                      updateLine(activeOrder.id, lineId, (line) => ({
+                        addons: (line.addons || []).filter((addon) => addon.id !== addonId),
+                      }))
+                    }
                     onDelete={(lineId) => activeOrder && deleteLine(activeOrder.id, lineId)}
                     onDiscount={(discount) => activeOrder && updateDiscount(activeOrder.id, discount)}
                     onHold={() => activeOrder && holdOrder(activeOrder.id)}
@@ -2064,6 +2097,7 @@
         onAdd,
         onQty,
         onNote,
+        onRemoveAddon,
         onDelete,
         onDiscount,
         onHold,
@@ -2074,11 +2108,19 @@
       }) {
         const [category, setCategory] = useState("All");
         const [search, setSearch] = useState("");
+        const [configuringItem, setConfiguringItem] = useState(null);
+        const [selectedAddonIds, setSelectedAddonIds] = useState([]);
         const regularCategories = categories.filter(
-          (item) => item !== "Set Upgrade" && item !== "Set Drinks"
+          (item) => item !== "Set Upgrade" && item !== "Set Drinks" && item !== "Add-ons"
         );
+        const addonItems = menuItems.filter((item) => item.category === "Add-ons" && !item.soldOut);
+        const selectedAddons = addonItems.filter((item) => selectedAddonIds.includes(item.id));
+        const configuredPrice = configuringItem
+          ? Number(configuringItem.price || 0) + selectedAddons.reduce((sum, item) => sum + Number(item.price || 0), 0)
+          : 0;
         const totals = calcOrder(order);
         const filtered = menuItems.filter((item) => {
+          if (item.category === "Add-ons") return false;
           const matchesCategory = category === "All" || item.category === category;
           const query = search.trim().toLowerCase();
           const matchesSearch =
@@ -2087,6 +2129,28 @@
             item.category.toLowerCase().includes(query);
           return matchesCategory && matchesSearch;
         });
+
+        function chooseMenuItem(item) {
+          if (ADDON_ELIGIBLE_CATEGORIES.includes(item.category) && addonItems.length > 0) {
+            setConfiguringItem(item);
+            setSelectedAddonIds([]);
+            return;
+          }
+          onAdd(item, []);
+        }
+
+        function toggleAddon(addonId) {
+          setSelectedAddonIds((current) =>
+            current.includes(addonId) ? current.filter((id) => id !== addonId) : [...current, addonId]
+          );
+        }
+
+        function addConfiguredItem() {
+          if (!configuringItem) return;
+          onAdd(configuringItem, selectedAddons);
+          setConfiguringItem(null);
+          setSelectedAddonIds([]);
+        }
 
         return (
           <div className="grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_430px]">
@@ -2174,7 +2238,7 @@
                   <button
                     key={item.id}
                     data-testid={`menu-${item.id}`}
-                    onClick={() => onAdd(item)}
+                    onClick={() => chooseMenuItem(item)}
                     disabled={item.soldOut}
                     className={cx(
                       "group overflow-hidden rounded-lg border border-line bg-panel text-left shadow-soft transition active:scale-[.99]",
@@ -2217,17 +2281,99 @@
               totals={totals}
               onQty={onQty}
               onNote={onNote}
+              onRemoveAddon={onRemoveAddon}
               onDelete={onDelete}
               onDiscount={onDiscount}
               onHold={onHold}
               onSend={onSend}
               onPay={onPay}
             />
+
+            {configuringItem && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+                <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-panel shadow-soft">
+                  <div className="flex items-center gap-4 border-b border-line p-5">
+                    <img
+                      src={configuringItem.image}
+                      alt={configuringItem.name}
+                      className="h-20 w-24 rounded-md object-cover"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold uppercase text-orange2">Main Item</div>
+                      <h3 className="mt-1 text-2xl font-black leading-tight">{configuringItem.name}</h3>
+                      <div className="mt-1 text-zinc-400">{money(configuringItem.price)}</div>
+                    </div>
+                    <button
+                      onClick={() => setConfiguringItem(null)}
+                      className="min-h-12 min-w-12 rounded-lg border border-line bg-ink text-lg font-black"
+                      aria-label="Close add-on selection"
+                    >
+                      X
+                    </button>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-auto p-5">
+                    <div className="mb-4">
+                      <h4 className="text-xl font-black">Choose Add-ons</h4>
+                      <p className="mt-1 text-sm text-zinc-400">Optional. Select any extras for this main item.</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {addonItems.map((addon) => {
+                        const selected = selectedAddonIds.includes(addon.id);
+                        return (
+                          <button
+                            key={addon.id}
+                            type="button"
+                            onClick={() => toggleAddon(addon.id)}
+                            className={cx(
+                              "flex min-h-20 items-center justify-between gap-3 rounded-lg border p-4 text-left",
+                              selected
+                                ? "border-orange bg-orange/15 text-white"
+                                : "border-line bg-ink text-zinc-300"
+                            )}
+                          >
+                            <span className="min-w-0 flex-1 font-bold leading-5">{addon.name}</span>
+                            <span className="shrink-0 text-lg font-black text-orange2">+{money(addon.price)}</span>
+                            <span
+                              className={cx(
+                                "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-lg font-black",
+                                selected ? "border-orange bg-orange text-black" : "border-zinc-600 bg-panel text-transparent"
+                              )}
+                            >
+                              {selected ? "✓" : "✓"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 border-t border-line bg-ink p-5 sm:grid-cols-[1fr_1.4fr]">
+                    <button
+                      onClick={() => {
+                        onAdd(configuringItem, []);
+                        setConfiguringItem(null);
+                        setSelectedAddonIds([]);
+                      }}
+                      className="min-h-16 rounded-lg border border-line bg-panel font-black text-zinc-200"
+                    >
+                      Add Main Only
+                    </button>
+                    <button
+                      onClick={addConfiguredItem}
+                      className="min-h-16 rounded-lg bg-orange px-5 text-lg font-black text-black"
+                    >
+                      Add to Order · {money(configuredPrice)}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       }
 
-      function OrderPanel({ order, totals, onQty, onNote, onDelete, onDiscount, onHold, onSend, onPay }) {
+      function OrderPanel({ order, totals, onQty, onNote, onRemoveAddon, onDelete, onDiscount, onHold, onSend, onPay }) {
         function toggleQuickNote(currentNote, preset) {
           const notes = String(currentNote || "")
             .split(",")
@@ -2279,6 +2425,24 @@
                         <div>
                           <div className="font-bold leading-5">{line.name}</div>
                           <div className="mt-1 text-sm text-zinc-400">{money(line.price)} each</div>
+                          {(line.addons || []).length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {line.addons.map((addon) => (
+                                <div key={addon.id} className="flex items-center justify-between gap-2 rounded-md bg-ink px-2 py-1.5 text-xs">
+                                  <span className="min-w-0 flex-1 font-semibold text-orange2">+ {addon.name}</span>
+                                  <span className="shrink-0 text-zinc-300">{money(addon.price)}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => onRemoveAddon(line.id, addon.id)}
+                                    className="min-h-7 min-w-7 rounded border border-line text-zinc-400"
+                                    aria-label={`Remove ${addon.name}`}
+                                  >
+                                    X
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         <button
                           onClick={() => onDelete(line.id)}
@@ -2303,7 +2467,7 @@
                             +
                           </button>
                         </div>
-                        <div className="text-lg font-black text-orange2">{money(line.price * line.qty)}</div>
+                        <div className="text-lg font-black text-orange2">{money(lineTotal(line))}</div>
                       </div>
                     </div>
                   </div>
@@ -2339,24 +2503,33 @@
                   <span>Subtotal</span>
                   <span>{money(totals.subtotal)}</span>
                 </div>
-                <div className="flex justify-between text-zinc-300">
-                  <span>Service Charge 10%</span>
-                  <span>{money(totals.service)}</span>
-                </div>
-                <div className="flex justify-between text-zinc-300">
-                  <span>GST 9%</span>
-                  <span>{money(totals.gst)}</span>
-                </div>
                 <div className="flex items-center justify-between gap-3 text-zinc-300">
                   <span>Discount</span>
-                  <input
-                    value={order?.discount || 0}
-                    onChange={(event) => onDiscount(event.target.value)}
-                    disabled={!order}
-                    inputMode="decimal"
-                    className="h-10 w-28 rounded-md border border-line bg-ink px-3 text-right text-white outline-none focus:border-orange"
-                  />
+                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-ink p-1">
+                    {[0, 10, 15].map((percent) => (
+                      <button
+                        key={percent}
+                        type="button"
+                        onClick={() => onDiscount(percent)}
+                        disabled={!order}
+                        className={cx(
+                          "min-h-10 min-w-16 rounded-md px-2 text-sm font-black disabled:opacity-40",
+                          Number(order?.discountPercent || 0) === percent
+                            ? "bg-orange text-black"
+                            : "text-zinc-300"
+                        )}
+                      >
+                        {percent === 0 ? "None" : `${percent}%`}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+                {totals.discount > 0 && (
+                  <div className="flex justify-between text-emerald-300">
+                    <span>Discount saved</span>
+                    <span>-{money(totals.discount)}</span>
+                  </div>
+                )}
                 <div className="border-t border-line pt-3">
                   <div className="flex items-end justify-between">
                     <span className="text-lg font-bold">Total</span>
@@ -2524,6 +2697,11 @@
                                     <span className={cx("block font-semibold", itemDone && "line-through")}>
                                       {item.qty}x {item.name}
                                     </span>
+                                    {(item.addons || []).map((addon) => (
+                                      <span key={addon.id} className="mt-1 block text-sm font-black text-orange2">
+                                        + {addon.name}
+                                      </span>
+                                    ))}
                                     {item.note && <span className="mt-1 block text-sm font-semibold text-orange2">{item.note}</span>}
                                   </span>
                                   <span className="text-xs text-zinc-500">{itemDone ? "Done" : item.category}</span>
@@ -2743,9 +2921,14 @@
                       <img src={item.image} alt={item.name} className="h-16 w-16 rounded-md object-cover" />
                       <div className="min-w-0 flex-1">
                         <div className="font-bold">{item.qty}x {item.name}</div>
+                        {(item.addons || []).map((addon) => (
+                          <div key={addon.id} className="mt-1 text-sm font-bold text-orange2">
+                            + {addon.name} ({money(addon.price)})
+                          </div>
+                        ))}
                         <div className="text-sm text-zinc-400">{item.note || item.category}</div>
                       </div>
-                      <div className="text-lg font-black">{money(item.price * item.qty)}</div>
+                      <div className="text-lg font-black">{money(lineTotal(item))}</div>
                     </div>
                   ))}
                   {!selectedOrder && (
@@ -2761,18 +2944,12 @@
                       <span>Subtotal</span>
                       <span>{money(totals.subtotal)}</span>
                     </div>
-                    <div className="flex justify-between text-zinc-300">
-                      <span>Service Charge 10%</span>
-                      <span>{money(totals.service)}</span>
-                    </div>
-                    <div className="flex justify-between text-zinc-300">
-                      <span>GST 9%</span>
-                      <span>{money(totals.gst)}</span>
-                    </div>
-                    <div className="flex justify-between text-zinc-300">
-                      <span>Discount</span>
-                      <span>{money(totals.discount)}</span>
-                    </div>
+                    {totals.discount > 0 && (
+                      <div className="flex justify-between text-emerald-300">
+                        <span>Discount {totals.discountPercent}%</span>
+                        <span>-{money(totals.discount)}</span>
+                      </div>
+                    )}
                     <div className="mt-3 border-t border-line pt-3">
                       <div className="flex justify-between">
                         <span className="text-lg font-black">Total</span>
@@ -2923,6 +3100,11 @@
             if (!itemStats[item.name]) itemStats[item.name] = { name: item.name, qty: 0, sales: 0 };
             itemStats[item.name].qty += Number(item.qty || 0);
             itemStats[item.name].sales += Number(item.price || 0) * Number(item.qty || 0);
+            (item.addons || []).forEach((addon) => {
+              if (!itemStats[addon.name]) itemStats[addon.name] = { name: addon.name, qty: 0, sales: 0 };
+              itemStats[addon.name].qty += Number(item.qty || 0);
+              itemStats[addon.name].sales += Number(addon.price || 0) * Number(item.qty || 0);
+            });
           });
         });
         const hotItems = Object.values(itemStats)
@@ -2961,8 +3143,6 @@
                 ["Paid Orders", report.orders],
                 ["Food Sales", report.subtotal],
                 ["Discount", report.discount],
-                ["Service Charge", report.service],
-                ["GST", report.gst],
                 ["Total Collected", report.total],
                 ["Supplier Cost", supplierReport.total],
                 ["Paid Supplier Cost", supplierReport.paid],
@@ -2997,7 +3177,7 @@
             {
               title: "Receipt Records",
               rows: [
-                ["Paid At", "Order", "Table", "Method", "Payment Detail", "Staff", "Items", "Subtotal", "Service", "GST", "Discount", "Total"],
+                ["Paid At", "Order", "Table", "Method", "Payment Detail", "Staff", "Items", "Subtotal", "Discount", "Total"],
                 ...filteredPayments.map((payment) => [
                   `${displayDate(payment.paidAt)} ${displayTime(payment.paidAt)}`,
                   payment.orderNumber,
@@ -3007,10 +3187,11 @@
                     ? `Paid ${money(payment.tendered || payment.total)} / Change ${money(payment.changeDue || 0)}`
                     : payment.reference || "-",
                   payment.collectedBy || "-",
-                  (payment.items || []).map((item) => `${item.qty} x ${item.name}${item.note ? ` (${item.note})` : ""}`).join(", "),
+                  (payment.items || []).map((item) => {
+                    const addons = (item.addons || []).map((addon) => ` + ${addon.name}`).join("");
+                    return `${item.qty} x ${item.name}${addons}${item.note ? ` (${item.note})` : ""}`;
+                  }).join(", "),
                   payment.subtotal,
-                  payment.service,
-                  payment.gst,
                   payment.discount,
                   payment.total,
                 ]),
@@ -3125,8 +3306,6 @@
                     ["Food Sales", report.subtotal],
                     ["Discount", -report.discount],
                     ["Net Food Sales", netFoodSales],
-                    ["Service Charge", report.service],
-                    ["GST", report.gst],
                     ["Total Collected", report.total],
                     ["Supplier Expenses", -supplierReport.total],
                     ["Paid Supplier Cost", -supplierReport.paid],
@@ -5600,9 +5779,17 @@
                 <div className="my-4 border-t border-line"></div>
                 <div className="space-y-2">
                   {receipt.items.map((item) => (
-                    <div key={item.id} className="flex justify-between gap-3 text-sm">
-                      <span>{item.qty}x {item.name}</span>
-                      <span>{money(item.price * item.qty)}</span>
+                    <div key={item.id} className="text-sm">
+                      <div className="flex justify-between gap-3">
+                        <span>{item.qty}x {item.name}</span>
+                        <span>{money(lineTotal(item))}</span>
+                      </div>
+                      {(item.addons || []).map((addon) => (
+                        <div key={addon.id} className="mt-1 flex justify-between gap-3 pl-4 text-zinc-400">
+                          <span>+ {addon.name}</span>
+                          <span>{money(Number(addon.price || 0) * Number(item.qty || 0))}</span>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
@@ -5612,18 +5799,12 @@
                     <span>Subtotal</span>
                     <span>{money(receipt.subtotal)}</span>
                   </div>
-                  <div className="flex justify-between text-zinc-300">
-                    <span>Service 10%</span>
-                    <span>{money(receipt.service)}</span>
-                  </div>
-                  <div className="flex justify-between text-zinc-300">
-                    <span>GST 9%</span>
-                    <span>{money(receipt.gst)}</span>
-                  </div>
-                  <div className="flex justify-between text-zinc-300">
-                    <span>Discount</span>
-                    <span>{money(receipt.discount)}</span>
-                  </div>
+                  {Number(receipt.discount || 0) > 0 && (
+                    <div className="flex justify-between text-zinc-300">
+                      <span>Discount {receipt.discountPercent || ""}%</span>
+                      <span>-{money(receipt.discount)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between pt-2 text-2xl font-black text-orange2">
                     <span>Total</span>
                     <span>{money(receipt.total)}</span>
