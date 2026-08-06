@@ -40,12 +40,23 @@ jobs:
           ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
         run: echo "$ANDROID_SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/dennis-phostop-release.p12"
 
+      - name: Detect signing key alias
+        env:
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+        run: |
+          KEY_ALIAS=$(LC_ALL=C keytool -list -v \
+            -keystore "$RUNNER_TEMP/dennis-phostop-release.p12" \
+            -storetype PKCS12 \
+            -storepass "$ANDROID_SIGNING_STORE_PASSWORD" \
+            | sed -n 's/^Alias name: //p' | head -n 1)
+          test -n "$KEY_ALIAS"
+          echo "ANDROID_SIGNING_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+
       - name: Build signed release APK
         working-directory: android-printer
         env:
           ANDROID_SIGNING_STORE_FILE: ${{ runner.temp }}/dennis-phostop-release.p12
           ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
-          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
           ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
         run: gradle --no-daemon :app:assembleRelease
 
