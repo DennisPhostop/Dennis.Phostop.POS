@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dennis.Phostop POS</title>
+    <title>Pho Stop(Downtown Gallery) POS</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
@@ -237,8 +237,8 @@
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
       const MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
-      const SETTINGS_VERSION = "dennis-phostop-v1";
-      const STAFF_VERSION = "phostop-staff-v3-seng-manager";
+      const SETTINGS_VERSION = "phostop-downtown-gallery-v2";
+      const STAFF_VERSION = "phostop-staff-v4-downtown-gallery";
       const TABLE_COUNT = 30;
       const CATEGORIES = [
         "Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals",
@@ -284,10 +284,10 @@
       const brandLogoImage = "data:image/jpeg;base64,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";
 
       const defaultSettings = {
-        businessName: "Dennis.Phostop",
+        businessName: "Pho Stop(Downtown Gallery) 201406935Z",
         tagline: "iPad Restaurant POS",
-        managerName: "Manager",
-        managerPin: "0000",
+        managerName: "Boss",
+        managerPin: "0073",
       };
 
       const defaultCloudConfig = {
@@ -301,10 +301,11 @@
       };
 
       const defaultStaffDirectory = [
-        { id: "s1", name: "John", role: "Staff", pin: "1111" },
-        { id: "s2", name: "Kim", role: "Staff", pin: "2222" },
-        { id: "s3", name: "Huat", role: "Staff", pin: "3333" },
-        { id: "s4", name: "Seng", role: "Manager", pin: "4444" },
+        { id: "s1", name: "John", role: "Staff", pin: "8135" },
+        { id: "s2", name: "KIM", role: "Staff", pin: "1803" },
+        { id: "s3", name: "Huat", role: "Staff", pin: "9522" },
+        { id: "s4", name: "Seng", role: "Manager", pin: "2466" },
+        { id: "s5", name: "Boss", role: "Manager", pin: "0073" },
       ];
 
       const defaultSuppliers = [
@@ -865,16 +866,19 @@
           settingsVersion: SETTINGS_VERSION,
           staffVersion: STAFF_VERSION,
           settings: shouldUseDefaultSettings
-            ? { ...defaultSettings, ...(saved.settings || {}), businessName: defaultSettings.businessName }
+            ? {
+                ...defaultSettings,
+                ...(saved.settings || {}),
+                businessName: defaultSettings.businessName,
+                managerName: defaultSettings.managerName,
+                managerPin: defaultSettings.managerPin,
+              }
             : { ...defaultSettings, ...(saved.settings || {}) },
           menuCategories: saved.menuVersion === MENU_VERSION && saved.menuCategories?.length
             ? saved.menuCategories
             : [...CATEGORIES],
           staff: shouldUseDefaultStaff
-            ? [
-                ...defaultStaffDirectory.map((staff) => ({ ...staff })),
-                ...(saved.staff || []).filter((staff) => !defaultStaffDirectory.some((item) => item.id === staff.id)),
-              ]
+            ? defaultStaffDirectory.map((staff) => ({ ...staff }))
             : saved.staff?.length ? saved.staff : defaultStaffDirectory.map((staff) => ({ ...staff })),
           tables: seedTables().map((table) => saved.tables?.find((savedTable) => savedTable.id === table.id) || table),
           menuItems: cleanMenu(shouldUseDefaultMenu ? defaultMenu : saved.menuItems?.length ? saved.menuItems : defaultMenu),
