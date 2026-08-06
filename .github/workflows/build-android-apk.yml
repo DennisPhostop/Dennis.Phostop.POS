@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -35,18 +35,30 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Build debug APK
-        working-directory: android-printer
-        run: gradle --no-daemon :app:assembleDebug
+      - name: Restore release signing key
+        env:
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+        run: echo "$ANDROID_SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/dennis-phostop-release.p12"
 
-      - name: Rename APK
-        run: cp android-printer/app/build/outputs/apk/debug/app-debug.apk Dennis-Phostop-POS-debug.apk
+      - name: Build signed release APK
+        working-directory: android-printer
+        env:
+          ANDROID_SIGNING_STORE_FILE: ${{ runner.temp }}/dennis-phostop-release.p12
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: gradle --no-daemon :app:assembleRelease
+
+      - name: Verify and rename APK
+        run: |
+          apksigner verify --verbose android-printer/app/build/outputs/apk/release/app-release.apk
+          cp android-printer/app/build/outputs/apk/release/app-release.apk Dennis-Phostop-POS.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
           name: Dennis-Phostop-POS-Android
-          path: Dennis-Phostop-POS-debug.apk
+          path: Dennis-Phostop-POS.apk
           retention-days: 30
 
       - name: Publish stable APK download
@@ -54,10 +66,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view android-latest >/dev/null 2>&1; then
-            gh release upload android-latest Dennis-Phostop-POS-debug.apk --clobber
+            gh release delete-asset android-latest Dennis-Phostop-POS-debug.apk --yes || true
+            gh release upload android-latest Dennis-Phostop-POS.apk --clobber
           else
-            gh release create android-latest Dennis-Phostop-POS-debug.apk \
+            gh release create android-latest Dennis-Phostop-POS.apk \
               --target main \
               --title "Dennis.Phostop POS Android" \
-              --notes "Android app for Redmi Pad 2 and MRBOSS E2000 Bluetooth printing."
+              --notes "Signed Android app for Redmi Pad 2 and MRBOSS E2000 Bluetooth printing."
           fi
