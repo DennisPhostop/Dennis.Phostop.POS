@@ -786,7 +786,7 @@
       }
 
       function summarizePayments(payments) {
-        return payments.reduce(
+        return (payments || []).filter((payment) => !payment.voided).reduce(
           (acc, payment) => {
             acc.orders += 1;
             acc.subtotal += Number(payment.subtotal || 0);
@@ -1028,6 +1028,10 @@
           ct: String(receipt?.discountType || "none"),
           ca: Number(receipt?.discountAmount || 0),
           g: Number(receipt?.total || 0),
+          vd: Boolean(receipt?.voided),
+          va: receipt?.voidedAt || "",
+          vb: String(receipt?.voidedBy || ""),
+          vr: String(receipt?.voidReason || ""),
         };
       }
 
@@ -1068,6 +1072,10 @@
             discountType: String(data.ct || "none"),
             discountAmount: Number(data.ca || 0),
             total: Number(data.g || 0),
+            voided: Boolean(data.vd),
+            voidedAt: data.va || "",
+            voidedBy: String(data.vb || ""),
+            voidReason: String(data.vr || ""),
           };
         } catch (error) {
           return null;
@@ -1113,16 +1121,23 @@
           settings?.businessName || defaultSettings.businessName,
           `Receipt #${receipt.orderNumber}`,
           displayDateTime(receipt.paidAt),
+        ];
+        if (receipt.voided) {
+          lines.push("******** VOIDED ********");
+          lines.push(`By: ${receipt.voidedBy || "Manager"}`);
+          if (receipt.voidReason) lines.push(`Reason: ${receipt.voidReason}`);
+        }
+        lines.push(
           divider,
           columns("Order", receipt.orderNumber),
           columns("Table", receipt.tableId ? `Table ${receipt.tableId}` : "Takeaway"),
           columns("Payment", receipt.method),
           divider,
-        ];
+        );
 
         (receipt.items || []).forEach((item) => {
           lines.push(`${item.qty}x ${item.name}`);
-          lines.push(columns("", money(lineTotal(item))));
+          lines.push(columns(" Base item", money(baseLineTotal(item))));
           (item.addons || []).forEach((addon) => {
             lines.push(columns(` + ${addon.name}`, money(Number(addon.price || 0) * Number(item.qty || 0))));
           });
@@ -1135,31 +1150,25 @@
           lines.push(columns(discountLabel(receipt), `-${money(receipt.discount)}`));
         }
         lines.push(columns("TOTAL", money(receipt.total)));
-        lines.push(divider, "Scan QR for digital receipt", "Thank you. Please come again.");
-        return lines.join("\n");
+        lines.push(divider, "Digital receipt QR is on POS", "Thank you. Please come again.");
+        return thermalSafeText(lines.join("\n"));
       }
 
-      function escPosQrBytes(value) {
-        const data = new TextEncoder().encode(value);
-        const storeLength = data.length + 3;
-        return joinBytes([
-          Uint8Array.from([0x1d, 0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]),
-          Uint8Array.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, 0x05]),
-          Uint8Array.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31]),
-          Uint8Array.from([0x1d, 0x28, 0x6b, storeLength & 0xff, (storeLength >> 8) & 0xff, 0x31, 0x50, 0x30]),
-          data,
-          Uint8Array.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]),
-        ]);
+      function thermalSafeText(value) {
+        return String(value ?? "")
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, "")
+          .replace(/[ \t]+\n/g, "\n");
       }
 
       function bluetoothTestBytes(businessName) {
         const encoder = new TextEncoder();
         return joinBytes([
           Uint8Array.from([0x1b, 0x40, 0x1b, 0x61, 0x01, 0x1b, 0x45, 0x01]),
-          encoder.encode(`${businessName || defaultSettings.businessName}\n`),
+          encoder.encode(`${thermalSafeText(businessName || defaultSettings.businessName)}\n`),
           Uint8Array.from([0x1b, 0x45, 0x00]),
-          encoder.encode(`Bluetooth Printer Test\n${displayDateTime()}\n\nPrint test successful\n\n\n`),
-          Uint8Array.from([0x1d, 0x56, 0x00]),
+          encoder.encode(`Bluetooth Printer Test\n${thermalSafeText(displayDateTime())}\n\nPrint test successful\n\n\n`),
         ]);
       }
 
@@ -1168,10 +1177,7 @@
         return joinBytes([
           Uint8Array.from([0x1b, 0x40, 0x1b, 0x61, 0x00]),
           encoder.encode(`${receiptText(receipt, settings)}\n\n`),
-          Uint8Array.from([0x1b, 0x61, 0x01]),
-          escPosQrBytes(receiptShareUrl(receipt, settings)),
           encoder.encode("\n\n"),
-          Uint8Array.from([0x1d, 0x56, 0x00]),
         ]);
       }
 
@@ -1217,8 +1223,7 @@
         const encoder = new TextEncoder();
         return joinBytes([
           Uint8Array.from([0x1b, 0x40, 0x1b, 0x61, 0x00]),
-          encoder.encode(`${thermalReportText(title, sections)}\n\n\n`),
-          Uint8Array.from([0x1d, 0x56, 0x00]),
+          encoder.encode(`${thermalSafeText(thermalReportText(title, sections))}\n\n\n`),
         ]);
       }
 
@@ -1451,6 +1456,10 @@
         return "Discount";
       }
 
+      function baseLineTotal(item) {
+        return roundCurrency(Number(item?.price || 0) * Number(item?.qty || 0));
+      }
+
       function lineUnitPrice(item) {
         const addOnTotal = (item?.addons || []).reduce((sum, addon) => sum + Number(addon.price || 0), 0);
         return roundCurrency(Number(item?.price || 0) + addOnTotal);
@@ -1502,7 +1511,7 @@
           }
         }, [staffDirectory, staffId]);
 
-        const todayPayments = state.payments.filter((payment) => payment.date === todayKey());
+        const todayPayments = state.payments.filter((payment) => payment.date === todayKey() && !payment.voided);
         const todaySales = todayPayments.reduce((sum, payment) => sum + Number(payment.total || 0), 0);
         const openOrderCount = state.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status)).length;
         const activeKitchenCount = state.kitchenTickets.filter(
@@ -1853,7 +1862,7 @@
         const openOrders = state.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status));
         const activeOrder = openOrders.find((order) => order.id === activeOrderId) || null;
         const selectedOrder = openOrders.find((order) => order.id === selectedOrderId) || activeOrder || openOrders[0] || null;
-        const todayPayments = state.payments.filter((payment) => payment.date === todayKey());
+        const todayPayments = state.payments.filter((payment) => payment.date === todayKey() && !payment.voided);
         const onDuty = state.timecards.filter((card) => card.date === todayKey() && !card.clockOut);
         const syncTone =
           syncStatus.kind === "online"
@@ -2166,6 +2175,55 @@
           if (activeOrderId === order.id) setActiveOrderId(null);
         }
 
+        function voidPaidPayment(payment, reason, managerPin) {
+          if (!payment) return { ok: false, message: "Select a paid receipt first." };
+          if (payment.voided) return { ok: false, message: "This receipt is already voided." };
+          const cleanReason = String(reason || "").trim();
+          if (!cleanReason) return { ok: false, message: "A void reason is required." };
+          const cleanPin = String(managerPin || "").trim();
+          const approvingStaff = staffDirectory.find(
+            (staff) => String(staff.role || "").toLowerCase().includes("manager") && staff.pin === cleanPin
+          );
+          const approvingManager = approvingStaff || (cleanPin === settings.managerPin
+            ? { name: settings.managerName || "Manager" }
+            : null);
+          if (!approvingManager) return { ok: false, message: "Invalid Manager PIN." };
+
+          const now = new Date().toISOString();
+          const voidedPayment = {
+            ...payment,
+            voided: true,
+            status: "Voided",
+            voidedAt: now,
+            voidedBy: approvingManager.name,
+            voidReason: cleanReason,
+            refundAmount: Number(payment.total || 0),
+          };
+          setState((current) => ({
+            ...current,
+            payments: (current.payments || []).map((item) => item.id === payment.id ? voidedPayment : item),
+            orders: current.orders.map((item) =>
+              item.id === payment.orderId
+                ? {
+                    ...item,
+                    status: "Cancelled",
+                    cancelledAt: now,
+                    cancelledBy: approvingManager.name,
+                    cancelReason: cleanReason,
+                    voidedPaymentId: payment.id,
+                  }
+                : item
+            ),
+            tables: current.tables.map((table) => {
+              if (table.id !== payment.tableId) return table;
+              if (table.orderId && table.orderId !== payment.orderId) return table;
+              return { ...table, status: "Available", orderId: null };
+            }),
+          }));
+          setReceipt((current) => current?.id === payment.id ? voidedPayment : current);
+          return { ok: true, message: `Receipt ${payment.orderNumber} voided by ${approvingManager.name}.` };
+        }
+
         function updateKitchenStatus(ticketId, status) {
           setState((current) => ({
             ...current,
@@ -2426,6 +2484,7 @@
                     onSelect={(orderId) => setSelectedOrderId(orderId)}
                     onPayment={completePayment}
                     onCancel={cancelOrder}
+                    onVoidPayment={voidPaidPayment}
                     onReceipt={setReceipt}
                     onTables={() => setView("tables")}
                   />
@@ -3315,7 +3374,7 @@
         );
       }
 
-      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onReceipt, onTables }) {
+      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onTables }) {
         const [listMode, setListMode] = useState("unpaid");
         const [historySearch, setHistorySearch] = useState("");
         const [selectedPaymentId, setSelectedPaymentId] = useState(null);
@@ -3346,6 +3405,9 @@
               payment.collectedBy,
               payment.reference,
               payment.date,
+              payment.voided ? "void refund cancelled" : "paid",
+              payment.voidedBy,
+              payment.voidReason,
             ]
               .filter(Boolean)
               .join(" ")
@@ -3381,6 +3443,22 @@
           if (window.confirm(`Cancel ${selectedOrder.number} (${label})? This will release the table and it will not count in Sales.`)) {
             onCancel(selectedOrder, "Wrong order cancelled before payment");
           }
+        }
+
+        function voidPaidReceipt() {
+          if (!selectedPayment || selectedPayment.voided) return;
+          const refundLabel = money(selectedPayment.total);
+          if (!window.confirm(`Void receipt ${selectedPayment.orderNumber} and record a ${refundLabel} refund? Kitchen KDS will remain unchanged.`)) return;
+          const reason = window.prompt("Reason for void / refund", "Customer cancelled after payment");
+          if (reason === null) return;
+          if (!reason.trim()) {
+            window.alert("Please enter a void reason.");
+            return;
+          }
+          const managerPin = window.prompt("Enter Manager PIN to approve this void");
+          if (managerPin === null) return;
+          const result = onVoidPayment(selectedPayment, reason, managerPin);
+          window.alert(result?.message || (result?.ok ? "Receipt voided." : "Unable to void receipt."));
         }
 
         return (
@@ -3465,7 +3543,9 @@
                         onClick={() => setSelectedPaymentId(payment.id)}
                         className={cx(
                           "w-full rounded-lg border p-3 text-left",
-                          selectedPayment?.id === payment.id ? "border-orange bg-orange/10" : "border-line bg-ink"
+                          selectedPayment?.id === payment.id
+                            ? payment.voided ? "border-rose-400 bg-rose-500/10" : "border-orange bg-orange/10"
+                            : payment.voided ? "border-rose-400/30 bg-rose-500/5" : "border-line bg-ink"
                         )}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -3475,8 +3555,9 @@
                               {payment.tableId ? `Table ${payment.tableId}` : "Takeaway"} / {payment.method || "Payment"}
                             </div>
                             <div className="mt-1 text-xs text-zinc-500">{displayDateTime(payment.paidAt)}</div>
+                            {payment.voided && <div className="mt-1 text-xs font-black text-rose-300">VOID / REFUND</div>}
                           </div>
-                          <div className="shrink-0 text-lg font-black text-emerald-300">{money(payment.total)}</div>
+                          <div className={cx("shrink-0 text-lg font-black", payment.voided ? "text-rose-300 line-through" : "text-emerald-300")}>{money(payment.total)}</div>
                         </div>
                       </button>
                     ))}
@@ -3506,8 +3587,13 @@
                       )}
                     </div>
                     {selectedPayment && (
-                      <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-bold text-emerald-300">
-                        Paid
+                      <span className={cx(
+                        "rounded-full border px-3 py-1 text-xs font-bold",
+                        selectedPayment.voided
+                          ? "border-rose-400/40 bg-rose-500/10 text-rose-300"
+                          : "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                      )}>
+                        {selectedPayment.voided ? "VOIDED" : "PAID"}
                       </span>
                     )}
                   </div>
@@ -3524,7 +3610,14 @@
                               ))}
                               {item.note ? <div className="mt-1 text-sm text-zinc-400">{item.note}</div> : null}
                             </div>
-                            <div className="shrink-0 font-black">{money(lineTotal(item))}</div>
+                            <div className="shrink-0 text-right">
+                              <div className="font-black">{money(baseLineTotal(item))}</div>
+                              {(item.addons || []).map((addon) => (
+                                <div key={`${addon.id}-price`} className="mt-1 text-sm font-bold text-orange2">
+                                  + {money(Number(addon.price || 0) * Number(item.qty || 0))}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         ))}
                         {(selectedPayment.items || []).length === 0 && (
@@ -3556,9 +3649,16 @@
                             </div>
                           )}
                           <div className="mt-3 flex justify-between border-t border-line pt-3 text-2xl font-black text-orange2">
-                            <span>Total</span>
+                            <span>{selectedPayment.voided ? "Original Total" : "Total"}</span>
                             <span>{money(selectedPayment.total)}</span>
                           </div>
+                          {selectedPayment.voided && (
+                            <div className="mt-3 rounded-md border border-rose-400/30 bg-rose-500/10 p-3 text-rose-200">
+                              <div className="font-black">Refund / Void: {money(selectedPayment.refundAmount || selectedPayment.total)}</div>
+                              <div className="mt-1 text-xs">By {selectedPayment.voidedBy || "Manager"} / {displayDateTime(selectedPayment.voidedAt)}</div>
+                              <div className="mt-1 text-xs">{selectedPayment.voidReason || "No reason recorded"}</div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -3568,13 +3668,20 @@
                     </div>
                   )}
                 </div>
-                <div className="shrink-0 border-t border-line bg-panel p-3 sm:p-4">
+                <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-line bg-panel p-3 sm:p-4">
                   <button
                     onClick={() => selectedPayment && onReceipt(selectedPayment)}
                     disabled={!selectedPayment}
                     className="min-h-14 w-full rounded-lg bg-orange text-base font-black text-black disabled:opacity-40"
                   >
                     Open / Print Receipt
+                  </button>
+                  <button
+                    onClick={voidPaidReceipt}
+                    disabled={!selectedPayment || selectedPayment.voided}
+                    className="min-h-14 w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-2 text-base font-black text-rose-200 disabled:opacity-35"
+                  >
+                    Void Paid Order
                   </button>
                 </div>
               </section>
@@ -3744,18 +3851,20 @@
         const [selectedDate, setSelectedDate] = useState(todayKey());
         const [selectedMonth, setSelectedMonth] = useState(monthKey());
 
-        const filteredPayments = payments.filter((payment) => {
+        const periodPayments = payments.filter((payment) => {
           if (range === "today") return payment.date === selectedDate;
           if (range === "month") return (payment.date || "").startsWith(selectedMonth);
           return true;
         });
+        const filteredPayments = periodPayments.filter((payment) => !payment.voided);
+        const voidedPayments = periodPayments.filter((payment) => payment.voided);
         const filteredSupplierRecords = (supplierRecords || []).filter((record) => {
           if (range === "today") return record.date === selectedDate;
           if (range === "month") return (record.date || "").startsWith(selectedMonth);
           return true;
         });
-        const todayPayments = payments.filter((payment) => payment.date === todayKey());
-        const monthPayments = payments.filter((payment) => (payment.date || "").startsWith(monthKey()));
+        const todayPayments = payments.filter((payment) => payment.date === todayKey() && !payment.voided);
+        const monthPayments = payments.filter((payment) => (payment.date || "").startsWith(monthKey()) && !payment.voided);
         const report = summarizePayments(filteredPayments);
         const todayReport = summarizePayments(todayPayments);
         const monthReport = summarizePayments(monthPayments);
@@ -3825,6 +3934,7 @@
               rows: [
                 ["Range", rangeLabel(range, selectedDate, selectedMonth)],
                 ["Paid Orders", report.orders],
+                ["Voided Receipts", voidedPayments.length],
                 ["Food Sales", report.subtotal],
                 ["Discount", report.discount],
                 ["Total Collected", report.total],
@@ -3861,10 +3971,11 @@
             {
               title: "Receipt Records",
               rows: [
-                ["Paid At", "Order", "Table", "Method", "Payment Detail", "Staff", "Items", "Subtotal", "Discount", "Total"],
-                ...filteredPayments.map((payment) => [
+                ["Paid At", "Order", "Status", "Table", "Method", "Payment Detail", "Staff", "Items", "Subtotal", "Discount", "Total", "Void Details"],
+                ...periodPayments.map((payment) => [
                   `${displayDate(payment.paidAt)} ${displayTime(payment.paidAt)}`,
                   payment.orderNumber,
+                  payment.voided ? "VOIDED" : "PAID",
                   payment.tableId ? `Table ${payment.tableId}` : "Takeaway",
                   payment.method,
                   payment.method === "Cash"
@@ -3878,6 +3989,9 @@
                   payment.subtotal,
                   payment.discount,
                   payment.total,
+                  payment.voided
+                    ? `${payment.voidReason || "No reason"} / ${payment.voidedBy || "Manager"} / ${displayDateTime(payment.voidedAt)}`
+                    : "",
                 ]),
               ],
             },
@@ -3909,6 +4023,7 @@
                 title: "Summary",
                 rows: [
                   ["Paid Orders", report.orders],
+                  ["Voided Receipts", voidedPayments.length],
                   ["Food Sales", money(report.subtotal)],
                   ["Discount", money(report.discount)],
                   ["Collected", money(report.total)],
@@ -4153,6 +4268,7 @@
                     <tr>
                       <th className="p-3">Date / Time</th>
                       <th className="p-3">Order</th>
+                      <th className="p-3">Status</th>
                       <th className="p-3">Table</th>
                       <th className="p-3">Method</th>
                       <th className="p-3">Payment Detail</th>
@@ -4161,12 +4277,22 @@
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredPayments.map((payment) => (
-                      <tr key={payment.id} className="border-t border-line">
+                    {periodPayments.map((payment) => (
+                      <tr key={payment.id} className={cx("border-t border-line", payment.voided && "bg-rose-500/5 text-rose-100")}>
                         <td className="p-3 text-zinc-400">
                           {displayDate(payment.paidAt)} {displayTime(payment.paidAt)}
                         </td>
                         <td className="p-3 font-semibold">{payment.orderNumber}</td>
+                        <td className="p-3">
+                          <span className={cx(
+                            "rounded-full border px-2 py-1 text-xs font-black",
+                            payment.voided
+                              ? "border-rose-400/40 bg-rose-500/10 text-rose-300"
+                              : "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                          )}>
+                            {payment.voided ? "VOIDED" : "PAID"}
+                          </span>
+                        </td>
                         <td className="p-3">{payment.tableId ? `Table ${payment.tableId}` : "Takeaway"}</td>
                         <td className="p-3">{payment.method}</td>
                         <td className="p-3 text-zinc-400">
@@ -4175,12 +4301,12 @@
                             : payment.reference || "-"}
                         </td>
                         <td className="p-3">{payment.collectedBy || "-"}</td>
-                        <td className="p-3 text-right font-black text-orange2">{money(payment.total)}</td>
+                        <td className={cx("p-3 text-right font-black", payment.voided ? "text-rose-300 line-through" : "text-orange2")}>{money(payment.total)}</td>
                       </tr>
                     ))}
-                    {filteredPayments.length === 0 && (
+                    {periodPayments.length === 0 && (
                       <tr>
-                        <td colSpan="7" className="p-8 text-center text-zinc-500">
+                        <td colSpan="8" className="p-8 text-center text-zinc-500">
                           No payments for this period.
                         </td>
                       </tr>
@@ -6637,6 +6763,13 @@
                   X
                 </button>
               </div>
+              {receipt.voided && (
+                <div className="mt-4 rounded-lg border-2 border-rose-500 bg-rose-500/10 p-4 text-center text-rose-200">
+                  <div className="text-2xl font-black">VOIDED RECEIPT</div>
+                  <div className="mt-1 text-xs">Refund {money(receipt.refundAmount || receipt.total)} / {receipt.voidedBy || "Manager"}</div>
+                  <div className="mt-1 text-xs">{receipt.voidReason || "No reason recorded"}</div>
+                </div>
+              )}
               <div className="mt-5 rounded-lg border border-line bg-ink p-4">
                 <div className="text-center">
                   <div className="text-xl font-black">{settings?.businessName || defaultSettings.businessName}</div>
@@ -6679,7 +6812,7 @@
                     <div key={item.id} className="text-sm">
                       <div className="flex justify-between gap-3">
                         <span>{item.qty}x {item.name}</span>
-                        <span>{money(lineTotal(item))}</span>
+                        <span>{money(baseLineTotal(item))}</span>
                       </div>
                       {(item.addons || []).map((addon) => (
                         <div key={addon.id} className="mt-1 flex justify-between gap-3 pl-4 text-zinc-400">
@@ -6792,6 +6925,14 @@
                 <div className="mt-3 text-sm text-zinc-500">{displayDateTime(receipt.paidAt)}</div>
               </div>
 
+              {receipt.voided && (
+                <div className="mt-5 rounded-lg border-2 border-rose-500 bg-rose-50 p-4 text-center text-rose-700">
+                  <div className="text-2xl font-black">VOIDED RECEIPT</div>
+                  <div className="mt-1 text-xs">Approved by {receipt.voidedBy || "Manager"}</div>
+                  <div className="mt-1 text-xs">{receipt.voidReason || "No reason recorded"}</div>
+                </div>
+              )}
+
               <div className="my-5 border-t border-dashed border-zinc-300"></div>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between gap-3">
@@ -6810,11 +6951,11 @@
 
               <div className="my-5 border-t border-dashed border-zinc-300"></div>
               <div className="space-y-4">
-                {receipt.items.map((item) => (
+                {(receipt.items || []).map((item) => (
                   <div key={item.id} className="text-sm">
                     <div className="flex justify-between gap-4 font-semibold">
                       <span>{item.qty}x {item.name}</span>
-                      <span>{money(lineTotal(item))}</span>
+                      <span>{money(baseLineTotal(item))}</span>
                     </div>
                     {(item.addons || []).map((addon) => (
                       <div key={addon.id} className="mt-1 flex justify-between gap-4 pl-4 text-xs text-zinc-500">
