@@ -5985,13 +5985,15 @@
         function editItem(item) {
           setForm({ ...item, price: String(item.price) });
           requestAnimationFrame(() => {
-            editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+            const scrollContainer = editorRef.current?.parentElement;
+            if (scrollContainer) scrollContainer.scrollTop = 0;
+            editorRef.current?.scrollIntoView({ behavior: "auto", block: "start" });
           });
         }
 
         return (
           <div className="grid h-full grid-cols-1 gap-5 overflow-auto p-5 xl:grid-cols-[420px_1fr]">
-            <section ref={editorRef} className="scroll-mt-5 rounded-lg border border-line bg-panel p-5">
+            <section ref={editorRef} className="self-start scroll-mt-5 rounded-lg border border-line bg-panel p-5 xl:sticky xl:top-5">
               <h3 className="text-xl font-black">{editing ? "Edit Menu Item" : "Add Menu Item"}</h3>
               <div className="mt-5 space-y-4">
                 <div>
