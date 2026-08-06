@@ -150,6 +150,47 @@
           display: none !important;
         }
 
+        body.sales-printing {
+          background: #fff;
+          color: #111;
+        }
+
+        body.sales-printing * {
+          visibility: hidden !important;
+        }
+
+        body.sales-printing #sales-report-print-area,
+        body.sales-printing #sales-report-print-area * {
+          visibility: visible !important;
+        }
+
+        body.sales-printing #sales-report-print-area {
+          position: absolute;
+          inset: 0 auto auto 0;
+          width: 100%;
+          max-width: none;
+          border: 0 !important;
+          border-radius: 0 !important;
+          box-shadow: none !important;
+          background: #fff !important;
+          color: #111 !important;
+          padding: 24px !important;
+        }
+
+        body.sales-printing #sales-report-print-area * {
+          background: transparent !important;
+          color: #111 !important;
+          border-color: #ddd !important;
+        }
+
+        body.sales-printing .screen-only {
+          display: none !important;
+        }
+
+        body.sales-printing .report-print-title {
+          display: block !important;
+        }
+
         body.attendance-printing {
           background: #fff;
           color: #111;
@@ -705,15 +746,30 @@
           })
           .join("<br/>");
         const html = `<!doctype html><html><head><meta charset="UTF-8" /></head><body>${content}</body></html>`;
-        const blob = new Blob(["\ufeff", html], { type: "application/vnd.ms-excel;charset=utf-8" });
+        const downloadName = `${safeFileName(filename)}.xls`;
+        const mimeType = "application/vnd.ms-excel;charset=utf-8";
+        if (window.AndroidPrinter?.saveBase64File) {
+          try {
+            const bytes = new TextEncoder().encode(`\ufeff${html}`);
+            const result = parseAndroidPrinterResult(
+              window.AndroidPrinter.saveBase64File(downloadName, mimeType, bytesToBase64(bytes))
+            );
+            window.alert(result.message || `Saved ${downloadName} to Downloads.`);
+            return;
+          } catch (error) {
+            window.alert(error?.message || "Excel download failed.");
+            return;
+          }
+        }
+        const blob = new Blob(["\ufeff", html], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `${safeFileName(filename)}.xls`;
+        link.download = downloadName;
         document.body.appendChild(link);
         link.click();
         link.remove();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
       }
 
       function rangeLabel(range, selectedDate, selectedMonth) {
@@ -1119,6 +1175,53 @@
         ]);
       }
 
+      function thermalReportText(title, sections) {
+        const width = 32;
+        const divider = "-".repeat(width);
+        const wrap = (value) => {
+          const words = String(value ?? "").trim().split(/\s+/).filter(Boolean);
+          if (!words.length) return [""];
+          const lines = [];
+          let line = "";
+          words.forEach((word) => {
+            if (word.length > width) {
+              if (line) lines.push(line);
+              for (let offset = 0; offset < word.length; offset += width) lines.push(word.slice(offset, offset + width));
+              line = "";
+            } else if (!line) {
+              line = word;
+            } else if (`${line} ${word}`.length <= width) {
+              line += ` ${word}`;
+            } else {
+              lines.push(line);
+              line = word;
+            }
+          });
+          if (line) lines.push(line);
+          return lines;
+        };
+        const lines = [title, displayDateTime(), divider];
+        (sections || []).forEach((section, sectionIndex) => {
+          if (sectionIndex) lines.push(divider);
+          lines.push(String(section.title || "REPORT").toUpperCase());
+          (section.rows || []).forEach((row) => {
+            const cells = (Array.isArray(row) ? row : [row]).map((cell) => String(cell ?? "").trim());
+            wrap(cells.filter(Boolean).join(" | ")).forEach((line) => lines.push(line));
+          });
+        });
+        lines.push(divider, "END OF REPORT");
+        return lines.join("\n");
+      }
+
+      function bluetoothReportBytes(title, sections) {
+        const encoder = new TextEncoder();
+        return joinBytes([
+          Uint8Array.from([0x1b, 0x40, 0x1b, 0x61, 0x00]),
+          encoder.encode(`${thermalReportText(title, sections)}\n\n\n`),
+          Uint8Array.from([0x1d, 0x56, 0x00]),
+        ]);
+      }
+
       async function connectBluetoothPrinter() {
         if (!navigator.bluetooth) {
           throw new Error("This iPad/iPhone browser blocks direct Bluetooth printing. Use Print Receipt with AirPrint, or let the customer scan the receipt QR.");
@@ -1214,6 +1317,41 @@
       function printAndroidBytes(bytes) {
         if (!hasAndroidPrinterBridge()) throw new Error("Android printer bridge is not available.");
         return parseAndroidPrinterResult(window.AndroidPrinter.printBase64(bytesToBase64(bytes)));
+      }
+
+      function printReportPage(jobName, bodyClass, thermalSections = []) {
+        if (thermalSections.length && hasAndroidPrinterBridge()) {
+          try {
+            const result = printAndroidBytes(bluetoothReportBytes(jobName, thermalSections));
+            window.alert(result.message || "Report printed.");
+          } catch (error) {
+            window.alert(error?.message || "Report printing failed. Reconnect the Bluetooth printer and try again.");
+          }
+          return;
+        }
+        const reportClasses = ["sales-printing", "attendance-printing", "leave-printing"];
+        reportClasses.forEach((className) => document.body.classList.remove(className));
+        document.body.classList.add(bodyClass);
+        let cleanupTimer = null;
+        const cleanup = () => {
+          document.body.classList.remove(bodyClass);
+          if (cleanupTimer) clearTimeout(cleanupTimer);
+          window.removeEventListener("afterprint", cleanup);
+        };
+        window.addEventListener("afterprint", cleanup, { once: true });
+        cleanupTimer = setTimeout(cleanup, 60000);
+        setTimeout(() => {
+          try {
+            if (window.AndroidPrinter?.printPage) {
+              parseAndroidPrinterResult(window.AndroidPrinter.printPage(String(jobName || "POS Report")));
+            } else {
+              window.print();
+            }
+          } catch (error) {
+            cleanup();
+            window.alert(error?.message || "Unable to open the print dialog.");
+          }
+        }, 80);
       }
 
       function cloudSetupUrl(config) {
@@ -3642,7 +3780,7 @@
 
         const itemStats = {};
         filteredPayments.forEach((payment) => {
-          payment.items.forEach((item) => {
+          (payment.items || []).forEach((item) => {
             if (!itemStats[item.name]) itemStats[item.name] = { name: item.name, qty: 0, sales: 0 };
             itemStats[item.name].qty += Number(item.qty || 0);
             itemStats[item.name].sales += Number(item.price || 0) * Number(item.qty || 0);
@@ -3762,9 +3900,45 @@
           ]);
         }
 
+        function printSalesReport() {
+          printReportPage(
+            `Sales Report ${rangeLabel(range, selectedDate, selectedMonth)}`,
+            "sales-printing",
+            [
+              {
+                title: "Summary",
+                rows: [
+                  ["Paid Orders", report.orders],
+                  ["Food Sales", money(report.subtotal)],
+                  ["Discount", money(report.discount)],
+                  ["Collected", money(report.total)],
+                  ["Supplier Cost", money(supplierReport.total)],
+                  ["Profit / Loss", money(netProfit)],
+                  ["Average Order", money(average)],
+                ],
+              },
+              {
+                title: "Payment Mix",
+                rows: PAYMENT_METHODS.map((method) => [method, methodStats[method].count, money(methodStats[method].total)]),
+              },
+              {
+                title: "Top Items",
+                rows: hotItems.length
+                  ? hotItems.map((item) => [item.name, `x${item.qty}`, money(item.sales)])
+                  : [["No sales in this period"]],
+              },
+            ]
+          );
+        }
+
         return (
-          <div className="h-full overflow-auto p-5">
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div id="sales-report-print-area" className="h-full overflow-auto p-5">
+            <div className="report-print-title mb-5 hidden border-b border-zinc-300 pb-4">
+              <h1 className="text-2xl font-black">Sales Report</h1>
+              <div className="mt-1 text-sm">Period: {rangeLabel(range, selectedDate, selectedMonth)}</div>
+              <div className="mt-1 text-sm">Generated: {displayDateTime(new Date())}</div>
+            </div>
+            <div className="screen-only mb-5 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap gap-2">
                 {[
                   ["today", "Today"],
@@ -3801,7 +3975,7 @@
                   />
                 )}
                 <button
-                  onClick={() => window.print()}
+                  onClick={printSalesReport}
                   className="min-h-12 rounded-lg border border-line bg-panel px-4 text-sm font-bold text-zinc-300"
                 >
                   Print Report
@@ -4729,11 +4903,25 @@
         }
 
         function printAttendanceReport() {
-          document.body.classList.add("attendance-printing");
-          setTimeout(() => {
-            window.print();
-            setTimeout(() => document.body.classList.remove("attendance-printing"), 400);
-          }, 50);
+          printReportPage(attendanceTitle, "attendance-printing", [
+            {
+              title: "Summary",
+              rows: [
+                ["Shifts", attendanceCards.length],
+                ["Total Hours", formatHours(attendanceTotalHours)],
+                ["Open Shifts", attendanceOpenShifts],
+              ],
+            },
+            {
+              title: "Staff Hours",
+              rows: attendanceStaffRows.map((staff) => [
+                staff.name,
+                `${staff.shifts} shifts`,
+                formatHours(staff.hours),
+                staff.onDuty ? "On Duty" : "Off Duty",
+              ]),
+            },
+          ]);
         }
 
         function saveLeaveRequest() {
@@ -4782,11 +4970,28 @@
         }
 
         function printLeaveReport() {
-          document.body.classList.add("leave-printing");
-          setTimeout(() => {
-            window.print();
-            setTimeout(() => document.body.classList.remove("leave-printing"), 400);
-          }, 50);
+          printReportPage(leaveTitle, "leave-printing", [
+            {
+              title: "Summary",
+              rows: [
+                ["Requests", leaveReportRows.length],
+                ["Total Days", leaveTotalDays],
+                ["Approved Days", leaveApprovedDays],
+                ["Pending", leavePendingCount],
+              ],
+            },
+            {
+              title: "Leave Records",
+              rows: leaveReportRows.length
+                ? leaveReportRows.map((request) => [
+                    request.staffName,
+                    request.type,
+                    `${request.startDate} to ${request.endDate || request.startDate}`,
+                    request.status,
+                  ])
+                : [["No leave records"]],
+            },
+          ]);
         }
 
         function downloadLeaveReportExcel() {
