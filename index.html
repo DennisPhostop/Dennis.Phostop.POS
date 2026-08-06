@@ -278,8 +278,9 @@
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
-      const PREVIOUS_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
-      const MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
+      const LAVU_ADDON_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
+      const PREVIOUS_MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
+      const MENU_VERSION = "phostop-active-menu-v22-restore-summer-roll";
       const SETTINGS_VERSION = "phostop-downtown-gallery-v2";
       const STAFF_VERSION = "phostop-staff-v4-downtown-gallery";
       const TABLE_COUNT = 30;
@@ -291,11 +292,11 @@
       const ADDON_ELIGIBLE_CATEGORIES = ["Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals"];
       const LAVU_ADDON_OPTIONS = [
         ["Less Noodles", 0],
-        ["Mixed Vegetarian Cooked VEG", 3],
+        ["Mixed Vegetarian Cooked VEG", 2.2],
         ["More Cut Chillies", 0],
         ["More Lime", 0],
-        ["VEG Dumplings (4 pcs)", 5],
-        ["Egg In Soup", 1.2],
+        ["VEG Dumplings (4 pcs)", 2.9],
+        ["Egg In Soup", 1.3],
         ["Vegetables (Garnishes)", 0],
         ["Noodle", 2],
         ["Chicken", 3],
@@ -304,7 +305,7 @@
         ["Beef Balls", 3],
         ["Beansprouts", 0],
         ["Beansprouts Fully Cooked", 0],
-        ["Tofu", 2],
+        ["Tofu", 1.2],
         ["Onion", 0],
         ["Spring Onion", 0],
         ["Thai Basil", 0],
@@ -889,7 +890,15 @@
       }
 
       function mergeLavuAddonOptions(items) {
-        const current = Array.isArray(items) ? [...items] : [];
+        const officialPrices = new Map(
+          LAVU_ADDON_OPTIONS.map(([name, price]) => [name.toLowerCase(), price])
+        );
+        const current = (Array.isArray(items) ? items : []).map((item) => {
+          const officialPrice = String(item.category || "").toLowerCase() === "add-ons"
+            ? officialPrices.get(String(item.name || "").toLowerCase())
+            : undefined;
+          return officialPrice === undefined ? item : { ...item, price: officialPrice };
+        });
         const existing = new Set(
           current.map((item) => `${String(item.category || "").toLowerCase()}|${String(item.name || "").toLowerCase()}`)
         );
@@ -905,6 +914,16 @@
             image: menuImageFor("Add-ons", name),
           }));
         return [...current, ...additions];
+      }
+
+      function restoreSummerFreshRoll(items) {
+        const current = Array.isArray(items) ? [...items] : [];
+        const name = "101. Summer Fresh Rolls (Prawns & Chicken)";
+        if (current.some((item) => String(item.name || "").toLowerCase() === name.toLowerCase())) return current;
+        const restored = defaultMenu.find((item) => item.name === name);
+        return restored
+          ? [{ ...restored, id: "phostop-restored-101-summer-fresh-roll" }, ...current]
+          : current;
       }
 
       function saveStaffToState(current, nextStaff, editingStaff) {
@@ -958,7 +977,7 @@
 
       function hydrateState(saved) {
         if (!saved) return emptyState();
-        const shouldMergeLavuAddons = saved.menuVersion === PREVIOUS_MENU_VERSION;
+        const shouldMergeLavuAddons = [LAVU_ADDON_MENU_VERSION, PREVIOUS_MENU_VERSION].includes(saved.menuVersion);
         const shouldUseDefaultMenu = saved.menuVersion !== MENU_VERSION && !shouldMergeLavuAddons;
         const shouldUseDefaultSettings = saved.settingsVersion !== SETTINGS_VERSION;
         const shouldUseDefaultStaff = saved.staffVersion !== STAFF_VERSION;
@@ -977,7 +996,7 @@
                 managerPin: defaultSettings.managerPin,
               }
             : { ...defaultSettings, ...(saved.settings || {}) },
-          menuCategories: saved.menuVersion === MENU_VERSION && saved.menuCategories?.length
+          menuCategories: !shouldUseDefaultMenu && saved.menuCategories?.length
             ? saved.menuCategories
             : [...CATEGORIES],
           staff: shouldUseDefaultStaff
@@ -988,7 +1007,7 @@
             shouldUseDefaultMenu
               ? defaultMenu
               : shouldMergeLavuAddons
-              ? mergeLavuAddonOptions(saved.menuItems?.length ? saved.menuItems : defaultMenu)
+              ? restoreSummerFreshRoll(mergeLavuAddonOptions(saved.menuItems?.length ? saved.menuItems : defaultMenu))
               : saved.menuItems?.length ? saved.menuItems : defaultMenu
           ),
           orders: saved.orders || [],
