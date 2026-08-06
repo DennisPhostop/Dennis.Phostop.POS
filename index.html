@@ -277,7 +277,8 @@
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
-      const MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
+      const PREVIOUS_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
+      const MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
       const SETTINGS_VERSION = "phostop-downtown-gallery-v2";
       const STAFF_VERSION = "phostop-staff-v4-downtown-gallery";
       const TABLE_COUNT = 30;
@@ -287,6 +288,30 @@
       ];
       const ORDER_NOTES = ["No spicy", "Less ice", "No onion"];
       const ADDON_ELIGIBLE_CATEGORIES = ["Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals"];
+      const LAVU_ADDON_OPTIONS = [
+        ["Less Noodles", 0],
+        ["Mixed Vegetarian Cooked VEG", 3],
+        ["More Cut Chillies", 0],
+        ["More Lime", 0],
+        ["VEG Dumplings (4 pcs)", 5],
+        ["Egg In Soup", 1.2],
+        ["Vegetables (Garnishes)", 0],
+        ["Noodle", 2],
+        ["Chicken", 3],
+        ["Sliced Beef", 3],
+        ["Beef Shin", 3],
+        ["Beef Balls", 3],
+        ["Beansprouts", 0],
+        ["Beansprouts Fully Cooked", 0],
+        ["Tofu", 2],
+        ["Onion", 0],
+        ["Spring Onion", 0],
+        ["Thai Basil", 0],
+        ["Thai Parsley", 0],
+        ["Coriander", 0],
+        ["Pepper", 0],
+        ["Beef Fully Cooked", 0],
+      ];
       const SET_DRINK_OPTIONS = [
         ["Coke", 0], ["Coke Zero", 0], ["Hot Ginger", 0], ["Ayataka Green Tea", 0],
         ["Hot Earl Grey", 0], ["GOLD Tonic Water", 0], ["Dasani Drinking Water", 0],
@@ -472,6 +497,7 @@
         ["Add-ons", "Add Chicken for 702-705", 3],
         ["Add-ons", "Add Pork for 706-709", 3],
         ["Add-ons", "Upgrade Rice to Fried Rice", 3],
+        ...LAVU_ADDON_OPTIONS.map(([name, price]) => ["Add-ons", name, price]),
         ["Set Upgrade", "Set A - Chicken Mid Wings (3 pcs)", 3.2],
         ["Set Upgrade", "Set B - Deep-fried Spring Rolls (2 pcs)", 3.2],
         ["Set Upgrade", "Set C - Summer Fresh Roll (1 pc)", 3.6],
@@ -861,6 +887,25 @@
         }));
       }
 
+      function mergeLavuAddonOptions(items) {
+        const current = Array.isArray(items) ? [...items] : [];
+        const existing = new Set(
+          current.map((item) => `${String(item.category || "").toLowerCase()}|${String(item.name || "").toLowerCase()}`)
+        );
+        const additions = LAVU_ADDON_OPTIONS
+          .filter(([name]) => !existing.has(`add-ons|${name.toLowerCase()}`))
+          .map(([name, price], index) => ({
+            id: `lavu-addon-${index + 1}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+            name,
+            category: "Add-ons",
+            price,
+            popular: false,
+            soldOut: false,
+            image: menuImageFor("Add-ons", name),
+          }));
+        return [...current, ...additions];
+      }
+
       function saveStaffToState(current, nextStaff, editingStaff) {
         const staffList = current.staff?.length ? current.staff : defaultStaffDirectory;
         return {
@@ -912,7 +957,8 @@
 
       function hydrateState(saved) {
         if (!saved) return emptyState();
-        const shouldUseDefaultMenu = saved.menuVersion !== MENU_VERSION;
+        const shouldMergeLavuAddons = saved.menuVersion === PREVIOUS_MENU_VERSION;
+        const shouldUseDefaultMenu = saved.menuVersion !== MENU_VERSION && !shouldMergeLavuAddons;
         const shouldUseDefaultSettings = saved.settingsVersion !== SETTINGS_VERSION;
         const shouldUseDefaultStaff = saved.staffVersion !== STAFF_VERSION;
         return {
@@ -937,7 +983,13 @@
             ? defaultStaffDirectory.map((staff) => ({ ...staff }))
             : saved.staff?.length ? saved.staff : defaultStaffDirectory.map((staff) => ({ ...staff })),
           tables: seedTables().map((table) => saved.tables?.find((savedTable) => savedTable.id === table.id) || table),
-          menuItems: cleanMenu(shouldUseDefaultMenu ? defaultMenu : saved.menuItems?.length ? saved.menuItems : defaultMenu),
+          menuItems: cleanMenu(
+            shouldUseDefaultMenu
+              ? defaultMenu
+              : shouldMergeLavuAddons
+              ? mergeLavuAddonOptions(saved.menuItems?.length ? saved.menuItems : defaultMenu)
+              : saved.menuItems?.length ? saved.menuItems : defaultMenu
+          ),
           orders: saved.orders || [],
           kitchenTickets: saved.kitchenTickets || [],
           payments: saved.payments || [],
@@ -2175,27 +2227,19 @@
           if (activeOrderId === order.id) setActiveOrderId(null);
         }
 
-        function voidPaidPayment(payment, reason, managerPin) {
+        function voidPaidPayment(payment, reason) {
           if (!payment) return { ok: false, message: "Select a paid receipt first." };
           if (payment.voided) return { ok: false, message: "This receipt is already voided." };
           const cleanReason = String(reason || "").trim();
           if (!cleanReason) return { ok: false, message: "A void reason is required." };
-          const cleanPin = String(managerPin || "").trim();
-          const approvingStaff = staffDirectory.find(
-            (staff) => String(staff.role || "").toLowerCase().includes("manager") && staff.pin === cleanPin
-          );
-          const approvingManager = approvingStaff || (cleanPin === settings.managerPin
-            ? { name: settings.managerName || "Manager" }
-            : null);
-          if (!approvingManager) return { ok: false, message: "Invalid Manager PIN." };
-
+          const voidedBy = user.name || "Staff";
           const now = new Date().toISOString();
           const voidedPayment = {
             ...payment,
             voided: true,
             status: "Voided",
             voidedAt: now,
-            voidedBy: approvingManager.name,
+            voidedBy,
             voidReason: cleanReason,
             refundAmount: Number(payment.total || 0),
           };
@@ -2208,7 +2252,7 @@
                     ...item,
                     status: "Cancelled",
                     cancelledAt: now,
-                    cancelledBy: approvingManager.name,
+                    cancelledBy: voidedBy,
                     cancelReason: cleanReason,
                     voidedPaymentId: payment.id,
                   }
@@ -2221,7 +2265,7 @@
             }),
           }));
           setReceipt((current) => current?.id === payment.id ? voidedPayment : current);
-          return { ok: true, message: `Receipt ${payment.orderNumber} voided by ${approvingManager.name}.` };
+          return { ok: true, message: `Receipt ${payment.orderNumber} voided by ${voidedBy}.` };
         }
 
         function updateKitchenStatus(ticketId, status) {
@@ -2847,7 +2891,9 @@
                             )}
                           >
                             <span className="min-w-0 flex-1 font-bold leading-5">{addon.name}</span>
-                            <span className="shrink-0 text-lg font-black text-orange2">+{money(addon.price)}</span>
+                            <span className="shrink-0 text-lg font-black text-orange2">
+                              {Number(addon.price || 0) > 0 ? `+${money(addon.price)}` : "NOTE"}
+                            </span>
                             <span
                               className={cx(
                                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-lg font-black",
@@ -3455,9 +3501,7 @@
             window.alert("Please enter a void reason.");
             return;
           }
-          const managerPin = window.prompt("Enter Manager PIN to approve this void");
-          if (managerPin === null) return;
-          const result = onVoidPayment(selectedPayment, reason, managerPin);
+          const result = onVoidPayment(selectedPayment, reason);
           window.alert(result?.message || (result?.ok ? "Receipt voided." : "Unable to void receipt."));
         }
 
