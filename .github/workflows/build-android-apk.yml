@@ -62,7 +62,7 @@ jobs:
 
       - name: Verify and rename APK
         run: |
-          apksigner verify --verbose android-printer/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose android-printer/app/build/outputs/apk/release/app-release.apk
           cp android-printer/app/build/outputs/apk/release/app-release.apk Dennis-Phostop-POS.apk
 
       - name: Upload installable APK
