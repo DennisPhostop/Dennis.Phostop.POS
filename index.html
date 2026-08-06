@@ -5869,6 +5869,7 @@
         const [form, setForm] = useState(emptyForm);
         const [newCategory, setNewCategory] = useState("");
         const [categoryEdit, setCategoryEdit] = useState(null);
+        const editorRef = useRef(null);
         const editing = Boolean(form.id);
 
         useEffect(() => {
@@ -5961,9 +5962,16 @@
           }));
         }
 
+        function editItem(item) {
+          setForm({ ...item, price: String(item.price) });
+          requestAnimationFrame(() => {
+            editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        }
+
         return (
           <div className="grid h-full grid-cols-1 gap-5 overflow-auto p-5 xl:grid-cols-[420px_1fr]">
-            <section className="rounded-lg border border-line bg-panel p-5">
+            <section ref={editorRef} className="scroll-mt-5 rounded-lg border border-line bg-panel p-5">
               <h3 className="text-xl font-black">{editing ? "Edit Menu Item" : "Add Menu Item"}</h3>
               <div className="mt-5 space-y-4">
                 <div>
@@ -6126,8 +6134,9 @@
                       </div>
                       <div className="mt-3 grid grid-cols-3 gap-2">
                         <button
-                          onClick={() => setForm({ ...item, price: String(item.price) })}
-                          className="min-h-10 rounded-md border border-line bg-panel text-xs font-bold"
+                          type="button"
+                          onClick={() => editItem(item)}
+                          className="min-h-10 touch-manipulation rounded-md border border-line bg-panel text-xs font-bold"
                         >
                           Edit
                         </button>
