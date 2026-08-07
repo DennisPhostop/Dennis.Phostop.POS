@@ -2352,6 +2352,15 @@
           }));
         }
 
+        function clearCompletedKitchenTickets() {
+          setState((current) => ({
+            ...current,
+            kitchenTickets: current.kitchenTickets.filter(
+              (ticket) => !ticket.archived && ticket.status !== "Served"
+            ),
+          }));
+        }
+
         function archiveKitchenTicket(ticketId) {
           setState((current) => ({
             ...current,
@@ -2569,6 +2578,7 @@
                     onStatus={updateKitchenStatus}
                     onToggleItem={toggleKitchenItem}
                     onConfirm={confirmKitchenTicket}
+                    onClearCompleted={clearCompletedKitchenTickets}
                     onRemove={removeKitchenTicket}
                   />
                 )}
@@ -3472,7 +3482,7 @@
         );
       }
 
-      function KdsView({ tickets, onStatus, onToggleItem, onConfirm, onRemove }) {
+      function KdsView({ tickets, onStatus, onToggleItem, onConfirm, onClearCompleted, onRemove }) {
         const [bellEnabled, setBellEnabled] = useState(false);
         const [showCompleted, setShowCompleted] = useState(false);
         const knownTicketsRef = useRef(new Set(tickets.map((ticket) => ticket.id)));
@@ -3499,6 +3509,17 @@
         function removeTicket(ticket) {
           if (window.confirm(`Remove ${ticket.orderNumber} from KDS? Sales and payment records will stay.`)) {
             onRemove(ticket.id);
+          }
+        }
+
+        function clearCompletedTickets() {
+          if (completedTickets.length === 0) return;
+          if (
+            window.confirm(
+              `Delete all ${completedTickets.length} completed KDS tickets? Sales, payments and receipts will stay.`
+            )
+          ) {
+            onClearCompleted();
           }
         }
 
@@ -3623,9 +3644,19 @@
               <section className="mt-4 rounded-lg border border-line bg-panel p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-base font-black">Completed Tickets</h3>
-                  <span className="rounded-full border border-line bg-ink px-2.5 py-1 text-xs font-bold text-zinc-400">
-                    {completedTickets.length}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full border border-line bg-ink px-2.5 py-1 text-xs font-bold text-zinc-400">
+                      {completedTickets.length}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={completedTickets.length === 0}
+                      onClick={clearCompletedTickets}
+                      className="min-h-9 rounded-md border border-rose-400/40 bg-rose-500/10 px-3 text-xs font-black text-rose-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Delete All
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                   {completedTickets.map((ticket) => (
