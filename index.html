@@ -278,6 +278,7 @@
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
+      const RESET_DEMO_PIN = "8888";
       const LAVU_ADDON_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
       const PREVIOUS_MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
       const MENU_VERSION = "phostop-active-menu-v22-restore-summer-roll";
@@ -345,6 +346,16 @@
       ];
       const SUPPLIER_PAYMENT_METHODS = ["Cash", "Card", "Bank Transfer", "PayNow / QR Pay", "Credit"];
       const SUPPLIER_STATUSES = ["Paid", "Unpaid"];
+
+      function confirmDemoReset() {
+        const enteredPin = window.prompt("Enter Reset Demo PIN");
+        if (enteredPin === null) return false;
+        if (enteredPin !== RESET_DEMO_PIN) {
+          window.alert("Incorrect PIN. Demo data was not reset.");
+          return false;
+        }
+        return window.confirm("Reset all demo data on connected devices?");
+      }
 
       const image = (id) =>
         `https://images.unsplash.com/${id}?auto=format&fit=crop&w=700&q=80`;
@@ -1621,6 +1632,7 @@
         }
 
         function resetDemo() {
+          if (!confirmDemoReset()) return;
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(SESSION_KEY);
           setState(emptyState());
@@ -1951,6 +1963,7 @@
         }
 
         function resetDemo() {
+          if (!confirmDemoReset()) return;
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(SESSION_KEY);
           setState(emptyState());
@@ -2319,6 +2332,26 @@
           }));
         }
 
+        function confirmKitchenTicket(ticketId) {
+          const now = new Date().toISOString();
+          setState((current) => ({
+            ...current,
+            kitchenTickets: current.kitchenTickets.map((ticket) =>
+              ticket.id === ticketId
+                ? {
+                    ...ticket,
+                    items: (ticket.items || []).map((item) => ({ ...item, kitchenDone: true })),
+                    status: "Served",
+                    archived: true,
+                    confirmedAt: now,
+                    archivedAt: now,
+                    updatedAt: now,
+                  }
+                : ticket
+            ),
+          }));
+        }
+
         function archiveKitchenTicket(ticketId) {
           setState((current) => ({
             ...current,
@@ -2535,8 +2568,7 @@
                     tickets={state.kitchenTickets}
                     onStatus={updateKitchenStatus}
                     onToggleItem={toggleKitchenItem}
-                    onArchive={archiveKitchenTicket}
-                    onArchiveServed={archiveServedTickets}
+                    onConfirm={confirmKitchenTicket}
                     onRemove={removeKitchenTicket}
                   />
                 )}
@@ -3197,7 +3229,7 @@
         );
       }
 
-      function KdsView({ tickets, onStatus, onToggleItem, onArchive, onArchiveServed, onRemove }) {
+      function LegacyKdsView({ tickets, onStatus, onToggleItem, onArchive, onArchiveServed, onRemove }) {
         const [bellEnabled, setBellEnabled] = useState(false);
         const [showArchived, setShowArchived] = useState(false);
         const knownTicketsRef = useRef(new Set(tickets.map((ticket) => ticket.id)));
@@ -3436,6 +3468,206 @@
             <div className="mt-5 text-sm text-zinc-500">
               Active tickets: {activeTickets.length}. Served tickets on screen: {servedTickets.length}. Archived tickets: {archivedTickets.length}.
             </div>
+          </div>
+        );
+      }
+
+      function KdsView({ tickets, onStatus, onToggleItem, onConfirm, onRemove }) {
+        const [bellEnabled, setBellEnabled] = useState(false);
+        const [showCompleted, setShowCompleted] = useState(false);
+        const knownTicketsRef = useRef(new Set(tickets.map((ticket) => ticket.id)));
+        const activeTickets = tickets
+          .filter((ticket) => !ticket.archived && ticket.status !== "Served")
+          .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+        const completedTickets = tickets
+          .filter((ticket) => ticket.archived || ticket.status === "Served")
+          .sort((a, b) => new Date(b.archivedAt || b.updatedAt || 0) - new Date(a.archivedAt || a.updatedAt || 0));
+        const newTicketCount = activeTickets.filter((ticket) => ticket.status === "New").length;
+
+        useEffect(() => {
+          const known = knownTicketsRef.current;
+          const incoming = tickets.filter((ticket) => ticket.status === "New" && !ticket.archived && !known.has(ticket.id));
+          if (bellEnabled && incoming.length > 0) playOrderBell();
+          knownTicketsRef.current = new Set(tickets.map((ticket) => ticket.id));
+        }, [tickets, bellEnabled]);
+
+        function enableBell() {
+          setBellEnabled(true);
+          playOrderBell();
+        }
+
+        function removeTicket(ticket) {
+          if (window.confirm(`Remove ${ticket.orderNumber} from KDS? Sales and payment records will stay.`)) {
+            onRemove(ticket.id);
+          }
+        }
+
+        return (
+          <div className="h-full overflow-auto p-3 sm:p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <div>
+                  <h3 className="text-xl font-black">Kitchen Orders</h3>
+                  <div className="text-xs text-zinc-400">
+                    New {newTicketCount} / Active {activeTickets.length} / Completed {completedTickets.length}
+                  </div>
+                </div>
+                {newTicketCount > 0 && (
+                  <span className="rounded-full border border-orange bg-orange px-2.5 py-1 text-xs font-black text-black">
+                    {newTicketCount} NEW
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowCompleted((value) => !value)}
+                  className={cx(
+                    "min-h-10 rounded-lg border px-3 text-xs font-black",
+                    showCompleted
+                      ? "border-sky-400/40 bg-sky-500/10 text-sky-200"
+                      : "border-line bg-panel text-zinc-300"
+                  )}
+                >
+                  {showCompleted ? "Hide Completed" : "Completed"}
+                </button>
+                <button
+                  onClick={enableBell}
+                  className={cx(
+                    "min-h-10 rounded-lg border px-3 text-xs font-black",
+                    bellEnabled
+                      ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+                      : "border-orange bg-orange text-black"
+                  )}
+                >
+                  {bellEnabled ? "Bell On" : "Enable Bell"}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+              {activeTickets.map((ticket) => (
+                <article key={ticket.id} className="flex min-w-0 flex-col rounded-lg border border-line bg-panel p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-base font-black">{ticket.orderNumber}</div>
+                      <div className="text-xs font-semibold text-zinc-400">
+                        {ticket.tableId ? `Table ${ticket.tableId}` : "Takeaway"} / {displayTime(ticket.createdAt)}
+                      </div>
+                    </div>
+                    <span className={cx("shrink-0 rounded-md border px-2 py-1 text-[11px] font-black", statusClass(ticket.status))}>
+                      {ticket.status}
+                    </span>
+                  </div>
+
+                  <div className="mt-2 flex-1 space-y-1.5">
+                    {(ticket.items || []).map((item) => {
+                      const itemDone = Boolean(item.kitchenDone);
+                      const addons = (item.addons || []).map((addon) => addon.name).filter(Boolean);
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => onToggleItem(ticket.id, item.id)}
+                          className={cx(
+                            "flex min-h-10 w-full items-start gap-2 rounded-md border px-2 py-1.5 text-left",
+                            itemDone
+                              ? "border-emerald-400/35 bg-emerald-500/10 text-zinc-400"
+                              : "border-line bg-ink text-white"
+                          )}
+                          aria-label={`${itemDone ? "Undo" : "Complete"} ${item.qty} ${item.name}`}
+                        >
+                          <span
+                            className={cx(
+                              "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded border text-sm font-black",
+                              itemDone
+                                ? "border-emerald-400 bg-emerald-500 text-black"
+                                : "border-zinc-500 bg-panel text-transparent"
+                            )}
+                          >
+                            {itemDone ? "\u2713" : ""}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className={cx("block text-sm font-bold leading-5", itemDone && "line-through")}>
+                              {item.qty}x {item.name}
+                            </span>
+                            {addons.length > 0 && (
+                              <span className="block text-xs font-bold leading-4 text-orange2">
+                                + {addons.join(" / ")}
+                              </span>
+                            )}
+                            {item.note && <span className="block text-xs font-bold leading-4 text-orange2">Note: {item.note}</span>}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onConfirm(ticket.id)}
+                    className="mt-2 min-h-11 w-full rounded-md bg-emerald-500 text-sm font-black text-black transition active:scale-[.98]"
+                  >
+                    Confirm
+                  </button>
+                </article>
+              ))}
+            </div>
+
+            {activeTickets.length === 0 && (
+              <div className="rounded-lg border border-dashed border-line bg-panel p-10 text-center text-sm font-semibold text-zinc-500">
+                No active kitchen orders
+              </div>
+            )}
+
+            {showCompleted && (
+              <section className="mt-4 rounded-lg border border-line bg-panel p-3">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-base font-black">Completed Tickets</h3>
+                  <span className="rounded-full border border-line bg-ink px-2.5 py-1 text-xs font-bold text-zinc-400">
+                    {completedTickets.length}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                  {completedTickets.map((ticket) => (
+                    <div key={ticket.id} className="rounded-lg border border-line bg-ink p-3 opacity-80">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-black">{ticket.orderNumber}</div>
+                          <div className="text-xs text-zinc-500">
+                            {ticket.tableId ? `Table ${ticket.tableId}` : "Takeaway"} / {displayTime(ticket.archivedAt || ticket.updatedAt || ticket.createdAt)}
+                          </div>
+                        </div>
+                        <span className="rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-black text-emerald-200">
+                          Done
+                        </span>
+                      </div>
+                      <div className="mt-2 text-xs text-zinc-400">
+                        {(ticket.items || []).reduce((sum, item) => sum + item.qty, 0)} items
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => onStatus(ticket.id, "New")}
+                          className="min-h-9 rounded-md border border-line bg-panel text-xs font-bold text-zinc-300"
+                        >
+                          Restore
+                        </button>
+                        <button
+                          onClick={() => removeTicket(ticket)}
+                          className="min-h-9 rounded-md border border-rose-400/30 bg-rose-500/10 text-xs font-bold text-rose-200"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {completedTickets.length === 0 && (
+                    <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-zinc-500">
+                      No completed tickets
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
           </div>
         );
       }
