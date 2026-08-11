@@ -734,6 +734,15 @@
         }).format(Number(value || 0));
       }
 
+      function menuItemCode(name) {
+        const match = String(name || "").match(/^([A-Za-z]?\d+)\.\s*/);
+        return match ? match[1] : "";
+      }
+
+      function menuItemDisplayName(name) {
+        return String(name || "").replace(/^([A-Za-z]?\d+)\.\s*/, "");
+      }
+
       function roundCurrency(value) {
         return Math.round(Number(value || 0) * 100) / 100;
       }
@@ -1957,6 +1966,16 @@
             ? "border-sky-400/30 bg-sky-500/10 text-sky-200"
             : "border-line bg-panel text-zinc-300";
 
+        useEffect(() => {
+          if (activeOrderId && !openOrders.some((order) => order.id === activeOrderId)) {
+            const tableOrder = openOrders.find((order) => order.tableId === selectedTableId);
+            setActiveOrderId(tableOrder?.id || null);
+          }
+          if (selectedOrderId && !openOrders.some((order) => order.id === selectedOrderId)) {
+            setSelectedOrderId(null);
+          }
+        }, [state.orders, activeOrderId, selectedOrderId, selectedTableId]);
+
         function logout() {
           localStorage.removeItem(SESSION_KEY);
           setUser(null);
@@ -1978,14 +1997,22 @@
         function createOrderForTable(tableId) {
           const table = state.tables.find((item) => item.id === tableId);
           setSelectedTableId(tableId);
-          if (table?.orderId) {
-            const existing = state.orders.find((order) => order.id === table.orderId);
-            if (existing) {
-              setActiveOrderId(existing.id);
-              setSelectedOrderId(existing.id);
-              setView("pos");
-              return;
-            }
+          const existing = state.orders.find(
+            (order) =>
+              !["Paid", "Cancelled"].includes(order.status) &&
+              (order.id === table?.orderId || order.tableId === tableId)
+          );
+          if (existing) {
+            setState((current) => ({
+              ...current,
+              tables: current.tables.map((item) =>
+                item.id === tableId ? { ...item, status: "Occupied", orderId: existing.id } : item
+              ),
+            }));
+            setActiveOrderId(existing.id);
+            setSelectedOrderId(existing.id);
+            setView("pos");
+            return;
           }
 
           const order = {
@@ -2056,6 +2083,19 @@
             let orders = current.orders;
             let tables = current.tables;
             let order = orders.find((item) => item.id === orderId);
+
+            if (!order) {
+              const tableId = selectedTableId || 1;
+              order = orders.find(
+                (item) => item.tableId === tableId && !["Paid", "Cancelled"].includes(item.status)
+              );
+              if (order) {
+                orderId = order.id;
+                tables = tables.map((table) =>
+                  table.id === tableId ? { ...table, status: "Occupied", orderId: order.id } : table
+                );
+              }
+            }
 
             if (!order) {
               const tableId = selectedTableId || 1;
@@ -2626,6 +2666,7 @@
 
       function TablesView({ tables, orders, onOpenTable, onStatus, onTakeaway }) {
         const [filter, setFilter] = useState("All");
+        const [statusTableId, setStatusTableId] = useState(tables[0]?.id || 1);
         const visibleTables = filter === "All" ? tables : tables.filter((table) => table.status === filter);
         const statusCounts = TABLE_STATUSES.reduce((acc, status) => {
           acc[status] = tables.filter((table) => table.status === status).length;
@@ -2650,57 +2691,62 @@
                   </button>
                 ))}
               </div>
-              <button
-                onClick={onTakeaway}
-                className="min-h-12 rounded-lg bg-orange px-5 font-bold text-black"
-              >
-                New Takeaway
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={statusTableId}
+                  onChange={(event) => setStatusTableId(Number(event.target.value))}
+                  className="min-h-12 rounded-lg border border-line bg-panel px-3 text-sm font-bold text-zinc-200 outline-none focus:border-orange"
+                  aria-label="Select table for status change"
+                >
+                  {tables.map((table) => <option key={table.id} value={table.id}>Table {table.id}</option>)}
+                </select>
+                <select
+                  value={tables.find((table) => table.id === statusTableId)?.status || "Available"}
+                  onChange={(event) => onStatus(statusTableId, event.target.value)}
+                  className="min-h-12 rounded-lg border border-line bg-panel px-3 text-sm font-bold text-zinc-200 outline-none focus:border-orange"
+                  aria-label="Change table status"
+                >
+                  {TABLE_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+                <button
+                  onClick={onTakeaway}
+                  className="min-h-12 rounded-lg bg-orange px-5 font-bold text-black"
+                >
+                  New Takeaway
+                </button>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-5">
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6">
               {visibleTables.map((table) => {
                 const order = orders.find((item) => item.id === table.orderId);
-                const totals = order ? calcOrder(order) : null;
                 return (
-                  <div key={table.id} className="rounded-lg border border-line bg-panel p-4">
-                    <button
-                      data-testid={`table-${table.id}`}
-                      onClick={() => onOpenTable(table.id)}
-                      className="block min-h-36 w-full rounded-lg border border-white/5 bg-panel2 p-4 text-left active:scale-[.99]"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm text-zinc-400">Table</div>
-                          <div className="mt-1 text-4xl font-black">{table.id}</div>
-                        </div>
-                        <span className={cx("rounded-full border px-3 py-1 text-xs font-bold", statusClass(table.status))}>
-                          {table.status}
-                        </span>
-                      </div>
-                      <div className="mt-6 grid grid-cols-2 gap-2 text-sm">
-                        <div className="rounded-md bg-black/25 p-2">
-                          <div className="text-zinc-500">Order</div>
-                          <div className="truncate font-semibold">{order?.number || "None"}</div>
-                        </div>
-                        <div className="rounded-md bg-black/25 p-2">
-                          <div className="text-zinc-500">Total</div>
-                          <div className="font-semibold">{totals ? money(totals.total) : "-"}</div>
-                        </div>
-                      </div>
-                    </button>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      {["Reserved", "Cleaning", "Available", "Occupied"].map((status) => (
-                        <button
-                          key={status}
-                          onClick={() => onStatus(table.id, status)}
-                          className="min-h-10 rounded-md border border-line bg-ink text-xs font-semibold text-zinc-300"
-                        >
-                          {status}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <button
+                    key={table.id}
+                    data-testid={`table-${table.id}`}
+                    onClick={() => onOpenTable(table.id)}
+                    title={table.status}
+                    aria-label={`Table ${table.id}, ${table.status}`}
+                    className={cx(
+                      "relative flex min-h-24 w-full items-center justify-center rounded-lg border bg-panel text-center shadow-soft active:scale-[.98] sm:min-h-28",
+                      table.status === "Occupied" && "border-orange bg-orange/10",
+                      table.status === "Reserved" && "border-sky-400/50 bg-sky-500/10",
+                      table.status === "Cleaning" && "border-emerald-400/40 bg-emerald-500/10",
+                      table.status === "Available" && "border-line"
+                    )}
+                  >
+                    <span
+                      className={cx(
+                        "absolute right-3 top-3 h-2.5 w-2.5 rounded-full",
+                        table.status === "Occupied" && "bg-orange",
+                        table.status === "Reserved" && "bg-sky-400",
+                        table.status === "Cleaning" && "bg-emerald-400",
+                        table.status === "Available" && "bg-zinc-600"
+                      )}
+                    />
+                    <span className="text-4xl font-black sm:text-5xl">{table.id}</span>
+                    {order && <span className="absolute bottom-2 h-1.5 w-8 rounded-full bg-orange" />}
+                  </button>
                 );
               })}
             </div>
@@ -2730,6 +2776,7 @@
         const [search, setSearch] = useState("");
         const [configuringItem, setConfiguringItem] = useState(null);
         const [selectedAddonIds, setSelectedAddonIds] = useState([]);
+        const [openItemForm, setOpenItemForm] = useState(null);
         const regularCategories = categories.filter(
           (item) => item !== "Set Upgrade" && item !== "Set Drinks" && item !== "Add-ons"
         );
@@ -2772,26 +2819,49 @@
           setSelectedAddonIds([]);
         }
 
+        function addOpenItem() {
+          const name = String(openItemForm?.name || "").trim();
+          const price = Number(openItemForm?.price || 0);
+          if (!name || price <= 0) return;
+          onAdd({
+            id: uid("open-item"),
+            name,
+            category: "Open Item",
+            price,
+            image: "",
+            popular: false,
+            soldOut: false,
+            isOpenItem: true,
+          }, []);
+          setOpenItemForm(null);
+        }
+
         return (
-          <div className="grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_430px]">
-            <section className="min-h-0 overflow-auto border-r border-line p-5">
-              <div className="mb-4 flex flex-wrap items-center gap-3">
+          <div className="grid h-full grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_410px]">
+            <section className="min-h-0 overflow-auto border-r border-line p-3 xl:p-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
                 <button
                   onClick={onTables}
-                  className="min-h-12 rounded-lg border border-line bg-panel px-4 font-semibold text-zinc-200"
+                  className="min-h-11 rounded-lg border border-line bg-panel px-3 text-sm font-semibold text-zinc-200"
                 >
                   Tables
                 </button>
                 <button
                   onClick={onNewTakeaway}
-                  className="min-h-12 rounded-lg border border-line bg-panel px-4 font-semibold text-zinc-200"
+                  className="min-h-11 rounded-lg border border-line bg-panel px-3 text-sm font-semibold text-zinc-200"
                 >
                   Takeaway
+                </button>
+                <button
+                  onClick={() => setOpenItemForm({ name: "", price: "" })}
+                  className="min-h-11 rounded-lg bg-orange px-3 text-sm font-black text-black"
+                >
+                  + Open Item
                 </button>
                 <select
                   value={order?.id || ""}
                   onChange={(event) => onSelectOrder(event.target.value)}
-                  className="min-h-12 min-w-64 rounded-lg border border-line bg-panel px-4 text-zinc-200 outline-none focus:border-orange"
+                  className="min-h-11 min-w-48 rounded-lg border border-line bg-panel px-3 text-sm text-zinc-200 outline-none focus:border-orange"
                 >
                   <option value="">Select active order</option>
                   {openOrders.map((item) => (
@@ -2804,47 +2874,45 @@
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Search food or category"
-                  className="min-h-12 flex-1 rounded-lg border border-line bg-panel px-4 text-white outline-none focus:border-orange"
+                  className="min-h-11 min-w-48 flex-1 rounded-lg border border-line bg-panel px-3 text-sm text-white outline-none focus:border-orange"
                 />
               </div>
 
-              <div className="mb-4 grid grid-cols-[auto_1fr_1fr] items-stretch gap-2 rounded-lg border border-orange/40 bg-orange/10 p-2">
-                <div className="flex min-h-14 items-center px-3 text-sm font-black text-orange2">
+              <div className="mb-3 grid grid-cols-[auto_1fr_1fr] items-stretch gap-2 rounded-lg border border-orange/40 bg-orange/10 p-2">
+                <div className="flex min-h-11 items-center px-2 text-xs font-black text-orange2">
                   SET MENU
                 </div>
                 <button
                   onClick={() => setCategory("Set Upgrade")}
                   className={cx(
-                    "min-h-14 rounded-md border px-4 text-left font-black",
+                    "min-h-11 rounded-md border px-3 text-left text-sm font-black",
                     category === "Set Upgrade"
                       ? "border-orange bg-orange text-black"
                       : "border-orange/40 bg-panel text-white"
                   )}
                 >
-                  <span className="block">Set A–F</span>
-                  <span className={cx("mt-0.5 block text-xs font-semibold", category === "Set Upgrade" ? "text-black/70" : "text-zinc-400")}>Choose side</span>
+                  <span className="block">Set A-F</span>
                 </button>
                 <button
                   onClick={() => setCategory("Set Drinks")}
                   className={cx(
-                    "min-h-14 rounded-md border px-4 text-left font-black",
+                    "min-h-11 rounded-md border px-3 text-left text-sm font-black",
                     category === "Set Drinks"
                       ? "border-orange bg-orange text-black"
                       : "border-orange/40 bg-panel text-white"
                   )}
                 >
                   <span className="block">Set Drinks</span>
-                  <span className={cx("mt-0.5 block text-xs font-semibold", category === "Set Drinks" ? "text-black/70" : "text-zinc-400")}>Choose drink</span>
                 </button>
               </div>
 
-              <div className="mb-5 flex gap-2 overflow-auto pb-1 no-scrollbar">
-                {["All", ...regularCategories].map((item) => (
+              <div className="mb-3 flex gap-2 overflow-auto pb-1 no-scrollbar">
+                {[...regularCategories, "All"].map((item) => (
                   <button
                     key={item}
                     onClick={() => setCategory(item)}
                     className={cx(
-                      "min-h-12 shrink-0 rounded-lg border px-4 text-sm font-bold",
+                      "min-h-10 shrink-0 rounded-lg border px-3 text-xs font-bold",
                       category === item ? "border-orange bg-orange text-black" : "border-line bg-panel text-zinc-300"
                     )}
                   >
@@ -2853,46 +2921,31 @@
                 ))}
               </div>
 
-              <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 2xl:grid-cols-4">
-                {filtered.map((item) => (
-                  <button
-                    key={item.id}
-                    data-testid={`menu-${item.id}`}
-                    onClick={() => chooseMenuItem(item)}
-                    disabled={item.soldOut}
-                    className={cx(
-                      "group overflow-hidden rounded-lg border border-line bg-panel text-left shadow-soft transition active:scale-[.99]",
-                      item.soldOut && "opacity-50"
-                    )}
-                  >
-                    <div className="relative aspect-[4/3] overflow-hidden bg-panel2">
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        className="h-full w-full object-cover transition group-hover:scale-105"
-                      />
-                      {item.popular && (
-                        <span className="absolute left-3 top-3 rounded-full bg-orange px-3 py-1 text-xs font-black text-black">
-                          Popular
-                        </span>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-4">
+                {filtered.map((item) => {
+                  const code = menuItemCode(item.name);
+                  return (
+                    <button
+                      key={item.id}
+                      data-testid={`menu-${item.id}`}
+                      onClick={() => chooseMenuItem(item)}
+                      disabled={item.soldOut}
+                      className={cx(
+                        "relative flex min-h-20 flex-col justify-between rounded-lg border border-line bg-panel p-3 text-left shadow-soft active:scale-[.98]",
+                        item.soldOut && "opacity-45"
                       )}
-                      {item.soldOut && (
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/60 text-lg font-black">
-                          Sold Out
-                        </span>
-                      )}
-                    </div>
-                    <div className="p-4">
-                      <div className="min-h-12 text-lg font-bold leading-6">{item.name}</div>
-                      <div className="mt-3 flex items-center justify-between">
-                        <span className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-zinc-400">
-                          {item.category}
-                        </span>
-                        <span className="text-xl font-black text-orange2">{money(item.price)}</span>
+                    >
+                      <div className="flex w-full items-start gap-2">
+                        {code && <span className="shrink-0 rounded-md bg-orange px-2 py-1 text-xs font-black text-black">{code}</span>}
+                        <span className="min-w-0 flex-1 text-sm font-black leading-5">{menuItemDisplayName(item.name)}</span>
                       </div>
-                    </div>
-                  </button>
-                ))}
+                      <div className="mt-2 flex w-full items-end justify-between gap-2">
+                        <span className="truncate text-[11px] font-semibold text-zinc-500">{item.soldOut ? "SOLD OUT" : item.category}</span>
+                        <span className="shrink-0 text-base font-black text-orange2">{money(item.price)}</span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </section>
 
@@ -2913,11 +2966,6 @@
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
                 <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-panel shadow-soft">
                   <div className="flex items-center gap-4 border-b border-line p-5">
-                    <img
-                      src={configuringItem.image}
-                      alt={configuringItem.name}
-                      className="h-20 w-24 rounded-md object-cover"
-                    />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-bold uppercase text-orange2">Main Item</div>
                       <h3 className="mt-1 text-2xl font-black leading-tight">{configuringItem.name}</h3>
@@ -2991,6 +3039,48 @@
                 </div>
               </div>
             )}
+
+            {openItemForm && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+                <div className="w-full max-w-md rounded-lg border border-line bg-panel p-5 shadow-soft">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-bold uppercase text-orange2">Custom Sale</div>
+                      <h3 className="mt-1 text-2xl font-black">Open Item</h3>
+                    </div>
+                    <button onClick={() => setOpenItemForm(null)} className="min-h-11 min-w-11 rounded-lg border border-line bg-ink font-black">X</button>
+                  </div>
+                  <label className="mt-5 block text-sm font-bold text-zinc-400">Item name</label>
+                  <input
+                    autoFocus
+                    value={openItemForm.name}
+                    onChange={(event) => setOpenItemForm((current) => ({ ...current, name: event.target.value }))}
+                    placeholder="Example: Special meal"
+                    className="mt-2 min-h-14 w-full rounded-lg border border-line bg-ink px-4 text-white outline-none focus:border-orange"
+                  />
+                  <label className="mt-4 block text-sm font-bold text-zinc-400">Price</label>
+                  <label className="mt-2 flex min-h-14 items-center rounded-lg border border-line bg-ink px-4 focus-within:border-orange">
+                    <span className="font-black text-zinc-400">S$</span>
+                    <input
+                      value={openItemForm.price}
+                      onChange={(event) => setOpenItemForm((current) => ({ ...current, price: event.target.value }))}
+                      inputMode="decimal"
+                      type="number"
+                      min="0"
+                      step="0.10"
+                      className="min-w-0 flex-1 bg-transparent px-2 text-xl font-black text-white outline-none"
+                    />
+                  </label>
+                  <button
+                    onClick={addOpenItem}
+                    disabled={!String(openItemForm.name || "").trim() || Number(openItemForm.price || 0) <= 0}
+                    className="mt-5 min-h-14 w-full rounded-lg bg-orange text-lg font-black text-black disabled:opacity-40"
+                  >
+                    Add to Order
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         );
       }
@@ -3017,11 +3107,11 @@
         }
 
         return (
-          <aside className="flex min-h-0 flex-col bg-black/20 p-5">
-            <div className="mb-4 flex items-start justify-between gap-3">
+          <aside className="flex min-h-0 flex-col bg-black/20 p-3 xl:p-4">
+            <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold uppercase tracking-[.18em] text-zinc-500">Current Order</div>
-                <h3 className="mt-1 text-2xl font-black">{order?.number || "No order"}</h3>
+                <h3 className="mt-1 text-xl font-black">{order?.number || "No order"}</h3>
                 <div className="mt-1 text-sm text-zinc-400">
                   {order ? `${order.type}${order.tableId ? ` / Table ${order.tableId}` : ""}` : "Choose a table to start"}
                 </div>
@@ -3033,7 +3123,7 @@
               )}
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-auto pr-1 no-scrollbar">
+            <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1 no-scrollbar">
               {!order && (
                 <div className="rounded-lg border border-dashed border-line bg-panel p-5 text-center text-zinc-400">
                   Select Table 1-{TABLE_COUNT} or create a takeaway order.
@@ -3046,17 +3136,15 @@
               )}
               {(order?.items || []).map((line) => (
                 <div key={line.id} className="rounded-lg border border-line bg-panel p-3">
-                  <div className="flex gap-3">
-                    <img
-                      src={line.image}
-                      alt={line.name}
-                      className="h-20 w-20 rounded-md object-cover"
-                    />
+                  <div className="flex gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="font-bold leading-5">{line.name}</div>
-                          <div className="mt-1 text-sm text-zinc-400">{money(line.price)} each</div>
+                          <div className="font-bold leading-5">
+                            {menuItemCode(line.name) && <span className="mr-2 text-orange2">{menuItemCode(line.name)}</span>}
+                            {menuItemDisplayName(line.name)}
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-400">{money(line.price)} each</div>
                           {(line.addons || []).length > 0 && (
                             <div className="mt-2 space-y-1">
                               {line.addons.map((addon) => (
@@ -3083,18 +3171,18 @@
                           X
                         </button>
                       </div>
-                      <div className="mt-3 flex items-center justify-between">
+                      <div className="mt-2 flex items-center justify-between">
                         <div className="flex items-center rounded-lg border border-line bg-ink">
                           <button
                             onClick={() => onQty(line.id, -1)}
-                            className="min-h-11 min-w-11 text-xl font-black"
+                            className="min-h-10 min-w-10 text-xl font-black"
                           >
                             -
                           </button>
-                          <div className="min-w-10 text-center text-lg font-black">{line.qty}</div>
+                          <div className="min-w-9 text-center text-base font-black">{line.qty}</div>
                           <button
                             onClick={() => onQty(line.id, 1)}
-                            className="min-h-11 min-w-11 text-xl font-black"
+                            className="min-h-10 min-w-10 text-xl font-black"
                           >
                             +
                           </button>
@@ -3103,13 +3191,13 @@
                       </div>
                     </div>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
                     {ORDER_NOTES.map((note) => (
                       <button
                         key={note}
                         onClick={() => onNote(line.id, toggleQuickNote(line.note, note))}
                         className={cx(
-                          "min-h-9 rounded-md border px-3 text-xs font-bold",
+                          "min-h-8 rounded-md border px-2 text-[11px] font-bold",
                           String(line.note || "").split(",").map((item) => item.trim()).includes(note)
                             ? "border-orange bg-orange text-black"
                             : "border-line bg-ink text-zinc-300"
@@ -3123,13 +3211,13 @@
                     value={line.note || ""}
                     onChange={(event) => onNote(line.id, event.target.value)}
                     placeholder="Type kitchen note, e.g. extra soup / no bean sprout"
-                    className="mt-3 min-h-11 w-full rounded-lg border border-line bg-ink px-3 text-sm font-semibold text-white outline-none focus:border-orange"
+                    className="mt-2 min-h-10 w-full rounded-lg border border-line bg-ink px-3 text-xs font-semibold text-white outline-none focus:border-orange"
                   />
                 </div>
               ))}
             </div>
 
-            <div className="mt-4 rounded-lg border border-line bg-panel p-4">
+            <div className="mt-3 rounded-lg border border-line bg-panel p-3">
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between text-zinc-300">
                   <span>Subtotal</span>
@@ -3706,6 +3794,7 @@
       function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onTables }) {
         const [listMode, setListMode] = useState("unpaid");
         const [historySearch, setHistorySearch] = useState("");
+        const [historyDate, setHistoryDate] = useState(todayKey());
         const [selectedPaymentId, setSelectedPaymentId] = useState(null);
         const [method, setMethod] = useState("Cash");
         const [splitCount, setSplitCount] = useState(2);
@@ -3725,9 +3814,11 @@
         );
         const filteredPayments = useMemo(() => {
           const query = historySearch.trim().toLowerCase();
-          if (!query) return paidPayments;
-          return paidPayments.filter((payment) =>
-            [
+          return paidPayments.filter((payment) => {
+            const paymentDate = payment.paidAt ? todayKey(new Date(payment.paidAt)) : payment.date;
+            if (historyDate && paymentDate !== historyDate) return false;
+            if (!query) return true;
+            return [
               payment.orderNumber,
               payment.tableId ? `table ${payment.tableId}` : "takeaway",
               payment.method,
@@ -3741,9 +3832,9 @@
               .filter(Boolean)
               .join(" ")
               .toLowerCase()
-              .includes(query)
-          );
-        }, [paidPayments, historySearch]);
+              .includes(query);
+          });
+        }, [paidPayments, historySearch, historyDate]);
         const selectedPayment =
           filteredPayments.find((payment) => payment.id === selectedPaymentId) || filteredPayments[0] || null;
 
@@ -3789,7 +3880,7 @@
         }
 
         return (
-          <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(210px,34dvh)_minmax(0,1fr)] gap-3 overflow-hidden p-3 xl:grid-cols-[380px_minmax(0,1fr)] xl:grid-rows-1 xl:gap-5 xl:p-5">
+          <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(280px,42dvh)_minmax(0,1fr)] gap-3 overflow-hidden p-3 lg:grid-cols-[390px_minmax(0,1fr)] lg:grid-rows-1 lg:gap-4 lg:p-4 2xl:grid-cols-[440px_minmax(0,1fr)]">
             <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-line bg-panel p-3 sm:p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <h3 className="text-xl font-black">Orders</h3>
@@ -3804,7 +3895,7 @@
                 <button
                   onClick={() => setListMode("unpaid")}
                   className={cx(
-                    "min-h-11 rounded-md px-2 text-sm font-black",
+                    "min-h-14 rounded-md px-2 text-base font-black",
                     listMode === "unpaid" ? "bg-orange text-black" : "text-zinc-400"
                   )}
                 >
@@ -3813,7 +3904,7 @@
                 <button
                   onClick={() => setListMode("paid")}
                   className={cx(
-                    "min-h-11 rounded-md px-2 text-sm font-black",
+                    "min-h-14 rounded-md px-2 text-base font-black",
                     listMode === "paid" ? "bg-orange text-black" : "text-zinc-400"
                   )}
                 >
@@ -3822,12 +3913,42 @@
               </div>
 
               {listMode === "paid" && (
-                <input
-                  value={historySearch}
-                  onChange={(event) => setHistorySearch(event.target.value)}
-                  placeholder="Search order, table, payment..."
-                  className="mb-3 min-h-11 shrink-0 rounded-md border border-line bg-ink px-3 text-sm text-white outline-none focus:border-orange"
-                />
+                <div className="mb-3 shrink-0 space-y-2">
+                  <input
+                    value={historySearch}
+                    onChange={(event) => setHistorySearch(event.target.value)}
+                    placeholder="Search order, table, payment..."
+                    className="min-h-11 w-full rounded-md border border-line bg-ink px-3 text-sm text-white outline-none focus:border-orange"
+                  />
+                  <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-2">
+                    <button
+                      onClick={() => setHistoryDate(todayKey())}
+                      className={cx(
+                        "min-h-11 rounded-md border px-3 text-sm font-black",
+                        historyDate === todayKey() ? "border-orange bg-orange text-black" : "border-line bg-ink text-zinc-300"
+                      )}
+                    >
+                      Today
+                    </button>
+                    <input
+                      type="date"
+                      value={historyDate}
+                      onChange={(event) => setHistoryDate(event.target.value)}
+                      onInput={(event) => setHistoryDate(event.currentTarget.value)}
+                      className="min-h-11 min-w-0 rounded-md border border-line bg-ink px-3 text-sm font-bold text-white outline-none focus:border-orange"
+                      aria-label="Paid history date"
+                    />
+                    <button
+                      onClick={() => setHistoryDate("")}
+                      className={cx(
+                        "min-h-11 rounded-md border px-3 text-sm font-black",
+                        !historyDate ? "border-orange bg-orange text-black" : "border-line bg-ink text-zinc-300"
+                      )}
+                    >
+                      All
+                    </button>
+                  </div>
+                </div>
               )}
 
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
@@ -3869,7 +3990,7 @@
                         key={payment.id}
                         onClick={() => setSelectedPaymentId(payment.id)}
                         className={cx(
-                          "w-full rounded-lg border p-3 text-left",
+                          "min-h-20 w-full rounded-lg border p-4 text-left",
                           selectedPayment?.id === payment.id
                             ? payment.voided ? "border-rose-400 bg-rose-500/10" : "border-orange bg-orange/10"
                             : payment.voided ? "border-rose-400/30 bg-rose-500/5" : "border-line bg-ink"
@@ -3877,11 +3998,11 @@
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <div className="truncate text-base font-black">{payment.orderNumber || "Paid Order"}</div>
-                            <div className="mt-1 text-xs text-zinc-400">
+                            <div className="truncate text-lg font-black">{payment.orderNumber || "Paid Order"}</div>
+                            <div className="mt-1 text-sm text-zinc-400">
                               {payment.tableId ? `Table ${payment.tableId}` : "Takeaway"} / {payment.method || "Payment"}
                             </div>
-                            <div className="mt-1 text-xs text-zinc-500">{displayDateTime(payment.paidAt)}</div>
+                            <div className="mt-1 text-sm text-zinc-500">{displayDateTime(payment.paidAt)}</div>
                             {payment.voided && <div className="mt-1 text-xs font-black text-rose-300">VOID / REFUND</div>}
                           </div>
                           <div className={cx("shrink-0 text-lg font-black", payment.voided ? "text-rose-300 line-through" : "text-emerald-300")}>{money(payment.total)}</div>
@@ -6035,9 +6156,14 @@
               </div>
 
               <div className="mt-4 overflow-auto rounded-lg border border-line">
-                <table className="w-full min-w-[1180px] text-left text-sm">
+                <div className="screen-only flex items-center justify-between border-b border-line bg-orange/10 px-4 py-3">
+                  <div className="font-black text-orange2">Manager Time Edit</div>
+                  <div className="text-xs font-bold text-zinc-400">Clock In / Clock Out</div>
+                </div>
+                <table className="w-full min-w-[1080px] text-left text-sm">
                   <thead className="bg-ink text-zinc-400">
                     <tr>
+                      <th className="p-3">Manager Edit</th>
                       <th className="p-3">Date</th>
                       <th className="p-3">Staff</th>
                       <th className="p-3">Role</th>
@@ -6045,7 +6171,6 @@
                       <th className="p-3">Clock Out</th>
                       <th className="p-3 text-right">Hours</th>
                       <th className="p-3">Status</th>
-                      <th className="p-3 text-right">Manager Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -6053,6 +6178,31 @@
                       const editingTime = timecardForm.id === card.id;
                       return (
                         <tr key={card.id} className="border-t border-line">
+                          <td className="p-3">
+                            {editingTime ? (
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => saveTimecard(card.id, timecardForm.clockIn, timecardForm.clockOut)}
+                                  className="min-h-10 rounded-md bg-orange px-3 text-xs font-black text-black"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setTimecardForm({ id: "", clockIn: "", clockOut: "" });
+                                    setTimecardMessage("");
+                                  }}
+                                  className="min-h-10 rounded-md border border-line bg-ink px-3 text-xs font-bold"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button onClick={() => editTimecard(card)} className="min-h-10 rounded-md border border-orange/40 bg-orange/10 px-3 text-xs font-black text-orange2">
+                                Edit Time
+                              </button>
+                            )}
+                          </td>
                           <td className="p-3 text-zinc-400">{displayDate(card.date)}</td>
                           <td className="p-3 font-semibold">{card.staffName}</td>
                           <td className="p-3 text-zinc-400">{card.role}</td>
@@ -6086,34 +6236,6 @@
                             >
                               {card.clockOut ? "Clocked Out" : "On Duty"}
                             </span>
-                          </td>
-                          <td className="p-3 text-right">
-                            {editingTime ? (
-                              <div className="flex justify-end gap-2">
-                                <button
-                                  onClick={(event) => {
-                                    const fields = event.currentTarget.closest("tr").querySelectorAll('input[type="datetime-local"]');
-                                    saveTimecard(card.id, fields[0]?.value || "", fields[1]?.value || "");
-                                  }}
-                                  className="min-h-10 rounded-md bg-orange px-3 text-xs font-black text-black"
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setTimecardForm({ id: "", clockIn: "", clockOut: "" });
-                                    setTimecardMessage("");
-                                  }}
-                                  className="min-h-10 rounded-md border border-line bg-ink px-3 text-xs font-bold"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <button onClick={() => editTimecard(card)} className="min-h-10 rounded-md border border-orange/40 bg-orange/10 px-3 text-xs font-black text-orange2">
-                                Edit Time
-                              </button>
-                            )}
                           </td>
                         </tr>
                       );
