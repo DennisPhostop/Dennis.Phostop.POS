@@ -20,8 +20,6 @@
           try {
             window.localStorage.removeItem("aurora-ipad-pos-state-v1");
             window.localStorage.removeItem("aurora-ipad-pos-session-v1");
-            window.localStorage.removeItem("aurora-ipad-pos-cloud-config-v1");
-            window.localStorage.removeItem("aurora-ipad-pos-device-id-v1");
           } catch (error) {
             // Reload still helps when Safari blocks storage access completely.
           }
@@ -343,12 +341,16 @@
       const SETTINGS_VERSION = "phostop-downtown-gallery-v2";
       const STAFF_VERSION = "phostop-staff-v4-downtown-gallery";
       const TABLE_COUNT = 30;
+      const RICE_MEALS_TIME_CATEGORY = "Rice Meals (2pm - 8pm)";
+      const RICE_MILL_CATEGORY = "The Rice Mill";
       const CATEGORIES = [
-        "Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals",
+        "Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", RICE_MEALS_TIME_CATEGORY, RICE_MILL_CATEGORY,
         "Dessert", "Coffee", "Drinks", "Tea", "Add-ons", "Set Upgrade", "Set Drinks", "Packaging",
       ];
       const ORDER_NOTES = ["No spicy", "Less ice", "No onion"];
-      const ADDON_ELIGIBLE_CATEGORIES = ["Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", "Rice Meals"];
+      const ADDON_ELIGIBLE_CATEGORIES = [
+        "Salad", "Sides", "Pho", "Rice & Dry Noodle", "Vegetarian", RICE_MEALS_TIME_CATEGORY, RICE_MILL_CATEGORY,
+      ];
       const LAVU_ADDON_OPTIONS = [
         ["Less Noodles", 0],
         ["Mixed Vegetarian Cooked VEG", 2.2],
@@ -522,32 +524,32 @@
         ["Vegetarian", "405. PHO CHAY", 12.5],
         ["Vegetarian", "406. Vegetable Dumplings Pho", 15],
         ["Vegetarian", "407. VEG Dumplings Soup with Rice", 14.8],
-        ["Rice Meals", "701. Orange & Lemon Chicken Cutlet Rice 招牌橙子柠檬鸡排", 12.9],
-        ["Rice Meals", "702. Mongolian Chicken Rice 蒙古鸡 + 白饭", 10.9],
-        ["Rice Meals", "703. Creamy Butter Chicken Rice 奶油鸡 + 白饭", 10.9],
-        ["Rice Meals", "704. Salted Egg Chicken Rice 咸蛋鸡 + 白饭", 10.9],
-        ["Rice Meals", "705. KK Spicy Sambal Chicken Rice KK 叁峇鸡 + 白饭", 12.9],
-        ["Rice Meals", "706. Imperial Pork Ribs Rice 京都排骨王 + 白饭", 12.9],
-        ["Rice Meals", "707. Kangsar Sweet & Sour Pork Rice 江沙凤梨咕噜肉饭", 10.9],
-        ["Rice Meals", "708. Salted Egg Pork Rice 咸蛋猪肉片 + 白饭", 12.9],
-        ["Rice Meals", "709. Mongolian Pork with Rice 蒙古猪肉片 + 白饭", 10.9],
-        ["Rice Meals", "710. Stir-fried Hor Fun with Sliced Beef 干炒牛肉河粉", 12.9],
-        ["Rice Meals", "711. Braised Hor Fun 滑蛋河粉", 9.9],
-        ["Rice Meals", "712. Salted Fish & Chicken Fried Rice 咸鱼鸡丁蛋炒饭", 11.9],
-        ["Rice Meals", "713. Mala Egg Fried Rice with Fried Chicken 炸鸡麻辣蛋炒饭", 12.9],
-        ["Rice Meals", "714. Fried Rice with Crispy Pork Chop 香酥猪扒蛋炒饭", 12.9],
-        ["Rice Meals", "715. Tom Yum Fried Rice with Sliced Beef 牛肉冬蔭炒饭", 12.9],
-        ["Rice Meals", "716. Fu Yung Omelette 芙蓉蛋饭", 10.9],
-        ["Rice Meals", "717. Tofu Mixed VEG Rice 炖豆腐雜菜 + 白饭", 9.9],
-        ["Rice Meals", "308. Coconut Curry Chicken With Rice", 15.9],
-        ["Rice Meals", "601. Hot & Spicy Chicken with Rice", 15.9],
-        ["Rice Meals", "602. Herbal Chicken Soup with Rice", 18.9],
-        ["Rice Meals", "603. Braised Pork Belly Rice + Egg", 15.9],
-        ["Rice Meals", "604. BKT Pork Ribs & Belly + Rice", 15.9],
-        ["Rice Meals", "605. Thai Basil Minced Pork Rice + Egg", 15.2],
-        ["Rice Meals", "606. Peanut Pork with Rice + Egg", 15.9],
-        ["Rice Meals", "607. Lemongrass Curry Pork with Rice + Egg", 15.9],
-        ["Rice Meals", "Curry Fish Balls with Rice + Egg", 14.2],
+        [RICE_MEALS_TIME_CATEGORY, "701. Orange & Lemon Chicken Cutlet Rice 招牌橙子柠檬鸡排", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "702. Mongolian Chicken Rice 蒙古鸡 + 白饭", 10.9],
+        [RICE_MEALS_TIME_CATEGORY, "703. Creamy Butter Chicken Rice 奶油鸡 + 白饭", 10.9],
+        [RICE_MEALS_TIME_CATEGORY, "704. Salted Egg Chicken Rice 咸蛋鸡 + 白饭", 10.9],
+        [RICE_MEALS_TIME_CATEGORY, "705. KK Spicy Sambal Chicken Rice KK 叁峇鸡 + 白饭", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "706. Imperial Pork Ribs Rice 京都排骨王 + 白饭", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "707. Kangsar Sweet & Sour Pork Rice 江沙凤梨咕噜肉饭", 10.9],
+        [RICE_MEALS_TIME_CATEGORY, "708. Salted Egg Pork Rice 咸蛋猪肉片 + 白饭", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "709. Mongolian Pork with Rice 蒙古猪肉片 + 白饭", 10.9],
+        [RICE_MEALS_TIME_CATEGORY, "710. Stir-fried Hor Fun with Sliced Beef 干炒牛肉河粉", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "711. Braised Hor Fun 滑蛋河粉", 9.9],
+        [RICE_MEALS_TIME_CATEGORY, "712. Salted Fish & Chicken Fried Rice 咸鱼鸡丁蛋炒饭", 11.9],
+        [RICE_MEALS_TIME_CATEGORY, "713. Mala Egg Fried Rice with Fried Chicken 炸鸡麻辣蛋炒饭", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "714. Fried Rice with Crispy Pork Chop 香酥猪扒蛋炒饭", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "715. Tom Yum Fried Rice with Sliced Beef 牛肉冬蔭炒饭", 12.9],
+        [RICE_MEALS_TIME_CATEGORY, "716. Fu Yung Omelette 芙蓉蛋饭", 10.9],
+        [RICE_MEALS_TIME_CATEGORY, "717. Tofu Mixed VEG Rice 炖豆腐雜菜 + 白饭", 9.9],
+        [RICE_MILL_CATEGORY, "308. Coconut Curry Chicken With Rice", 15.9],
+        [RICE_MILL_CATEGORY, "601. Hot & Spicy Chicken with Rice", 15.9],
+        [RICE_MILL_CATEGORY, "602. Herbal Chicken Soup with Rice", 18.9],
+        [RICE_MILL_CATEGORY, "603. Braised Pork Belly Rice + Egg", 15.9],
+        [RICE_MILL_CATEGORY, "604. BKT Pork Ribs & Belly + Rice", 15.9],
+        [RICE_MILL_CATEGORY, "605. Thai Basil Minced Pork Rice + Egg", 15.2],
+        [RICE_MILL_CATEGORY, "606. Peanut Pork with Rice + Egg", 15.9],
+        [RICE_MILL_CATEGORY, "607. Lemongrass Curry Pork with Rice + Egg", 15.9],
+        [RICE_MILL_CATEGORY, "Curry Fish Balls with Rice + Egg", 14.2],
         ["Dessert", "901. Marine Collagen Jelly", 9.2],
         ["Dessert", "902. Pandan Waffles with Vanilla Ice-cream", 7.8],
         ["Dessert", "GRAPE Allmighty Jelly", 3.9],
@@ -612,7 +614,8 @@
         Pho: "photo-1582878826629-29b7ad1cdc43",
         "Rice & Dry Noodle": "photo-1569718212165-3a8278d5f624",
         Vegetarian: "photo-1512621776951-a57141f2eefd",
-        "Rice Meals": "photo-1512058564366-18510be2db19",
+        [RICE_MEALS_TIME_CATEGORY]: "photo-1512058564366-18510be2db19",
+        [RICE_MILL_CATEGORY]: "photo-1512058564366-18510be2db19",
         Dessert: "photo-1551024506-0bccd828d307",
         Coffee: "photo-1495474472287-4d71bcdd2085",
         Drinks: "photo-1544145945-f90425340c7e",
@@ -1031,6 +1034,31 @@
           : current;
       }
 
+      function splitRiceMealSections(items) {
+        return (Array.isArray(items) ? items : []).map((item) => {
+          if (item.category !== "Rice Meals") return item;
+          const code = Number(menuItemCode(item.name));
+          return {
+            ...item,
+            category: code >= 701 && code <= 717 ? RICE_MEALS_TIME_CATEGORY : RICE_MILL_CATEGORY,
+          };
+        });
+      }
+
+      function splitRiceMealCategories(categories) {
+        const current = (Array.isArray(categories) ? categories : []).filter(
+          (category) => category !== "Rice Meals" && category !== RICE_MEALS_TIME_CATEGORY && category !== RICE_MILL_CATEGORY
+        );
+        const vegetarianIndex = current.indexOf("Vegetarian");
+        const insertAt = vegetarianIndex >= 0 ? vegetarianIndex + 1 : current.length;
+        return [
+          ...current.slice(0, insertAt),
+          RICE_MEALS_TIME_CATEGORY,
+          RICE_MILL_CATEGORY,
+          ...current.slice(insertAt),
+        ];
+      }
+
       function saveStaffToState(current, nextStaff, editingStaff) {
         const staffList = current.staff?.length ? current.staff : defaultStaffDirectory;
         return {
@@ -1101,20 +1129,20 @@
                 managerPin: defaultSettings.managerPin,
               }
             : { ...defaultSettings, ...(saved.settings || {}) },
-          menuCategories: !shouldUseDefaultMenu && saved.menuCategories?.length
-            ? saved.menuCategories
-            : [...CATEGORIES],
+          menuCategories: splitRiceMealCategories(
+            !shouldUseDefaultMenu && saved.menuCategories?.length ? saved.menuCategories : CATEGORIES
+          ),
           staff: shouldUseDefaultStaff
             ? defaultStaffDirectory.map((staff) => ({ ...staff }))
             : saved.staff?.length ? saved.staff : defaultStaffDirectory.map((staff) => ({ ...staff })),
           tables: seedTables().map((table) => saved.tables?.find((savedTable) => savedTable.id === table.id) || table),
-          menuItems: cleanMenu(
+          menuItems: cleanMenu(splitRiceMealSections(
             shouldUseDefaultMenu
               ? defaultMenu
               : shouldMergeLavuAddons
               ? restoreSummerFreshRoll(mergeLavuAddonOptions(saved.menuItems?.length ? saved.menuItems : defaultMenu))
               : saved.menuItems?.length ? saved.menuItems : defaultMenu
-          ),
+          )),
           orders: saved.orders || [],
           kitchenTickets: saved.kitchenTickets || [],
           payments: saved.payments || [],
@@ -1196,7 +1224,11 @@
             n: String(item.name || "Item"),
             q: Number(item.qty || 0),
             p: Number(item.price || 0),
-            a: (item.addons || []).map((addon) => [String(addon.name || "Add-on"), Number(addon.price || 0)]),
+            a: (item.addons || []).map((addon) => [
+              String(addon.name || "Add-on"),
+              Number(addon.price || 0),
+              Math.max(1, Number(addon.qty || 1)),
+            ]),
             x: String(item.note || ""),
           })),
           s: Number(receipt?.subtotal || 0),
@@ -1240,6 +1272,7 @@
                     id: `digital-addon-${index}-${addonIndex}`,
                     name: String(addon?.[0] || "Add-on"),
                     price: Number(addon?.[1] || 0),
+                    qty: Math.max(1, Number(addon?.[2] || 1)),
                   }))
                 : [],
             })),
@@ -1316,7 +1349,13 @@
           lines.push(`${item.qty}x ${item.name}`);
           lines.push(columns(" Base item", money(baseLineTotal(item))));
           (item.addons || []).forEach((addon) => {
-            lines.push(columns(` + ${addon.name}`, money(Number(addon.price || 0) * Number(item.qty || 0))));
+            const addonQty = Math.max(1, Number(addon.qty || 1));
+            lines.push(
+              columns(
+                ` + ${addonQty > 1 ? `${addonQty}x ` : ""}${addon.name}`,
+                money(Number(addon.price || 0) * addonQty * Number(item.qty || 0))
+              )
+            );
           });
           if (item.note) lines.push(` Note: ${item.note}`);
         });
@@ -1637,8 +1676,28 @@
         return roundCurrency(Number(item?.price || 0) * Number(item?.qty || 0));
       }
 
+      function addonQuantity(addon) {
+        return Math.max(1, Math.round(Number(addon?.qty || 1)));
+      }
+
+      function addonLabel(addon) {
+        const quantity = addonQuantity(addon);
+        return `${quantity > 1 ? `${quantity}x ` : ""}${addon?.name || "Add-on"}`;
+      }
+
+      function addonUnitTotal(addon) {
+        return roundCurrency(Number(addon?.price || 0) * addonQuantity(addon));
+      }
+
+      function addonLineTotal(addon, itemQuantity) {
+        return roundCurrency(addonUnitTotal(addon) * Number(itemQuantity || 0));
+      }
+
       function lineUnitPrice(item) {
-        const addOnTotal = (item?.addons || []).reduce((sum, addon) => sum + Number(addon.price || 0), 0);
+        const addOnTotal = (item?.addons || []).reduce(
+          (sum, addon) => sum + addonUnitTotal(addon),
+          0
+        );
         return roundCurrency(Number(item?.price || 0) + addOnTotal);
       }
 
@@ -1771,23 +1830,23 @@
         }
 
         return (
-          <main className="min-h-screen overflow-auto bg-zinc-50 text-zinc-950">
-            <section className="mx-auto grid min-h-screen max-w-7xl grid-cols-1 gap-5 px-4 py-4 md:px-6 md:py-6 lg:grid-cols-[1fr_430px]">
-              <div className="flex min-h-[520px] flex-col justify-between rounded-lg border border-zinc-200 bg-white p-5 shadow-soft md:p-7">
-                <div>
+          <main className="min-h-screen overflow-x-hidden overflow-y-auto bg-zinc-50 text-zinc-950">
+            <section className="mx-auto grid min-h-screen max-w-7xl grid-cols-1 gap-5 px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-6 lg:grid-cols-[minmax(0,1fr)_430px]">
+              <div className="flex min-w-0 flex-col justify-between rounded-lg border border-zinc-200 bg-white p-4 shadow-soft sm:p-5 md:min-h-[520px] md:p-7">
+                <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-3">
-                    <div>
+                    <div className="min-w-0">
                       <div className="text-sm font-bold uppercase tracking-[.18em] text-zinc-500">
                         Staff Login
                       </div>
-                      <h1 className="mt-1 text-4xl font-black leading-tight text-zinc-950 md:text-6xl">
+                      <h1 className="mt-1 max-w-full break-words text-3xl font-black leading-tight text-zinc-950 sm:text-4xl md:text-6xl">
                         {settings.businessName}
                       </h1>
                     </div>
                   </div>
 
                   <div className="mt-6">
-                    <div className="relative min-h-[360px] overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-soft">
+                    <div className="relative min-h-[240px] overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-soft sm:min-h-[300px] md:min-h-[360px]">
                       <div className="absolute inset-0 z-20 flex items-center justify-center bg-white p-8 md:p-12">
                         <img
                           src={brandLogoImage}
@@ -1890,23 +1949,23 @@
                   </div>
                 </div>
 
-                <div className="mt-8 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <div className="mt-5 grid min-w-0 grid-cols-2 gap-2 sm:mt-8 sm:gap-3 xl:grid-cols-4">
                   {[
                     ["Tables Ready", `${availableTableCount}/${TABLE_COUNT}`],
                     ["Open Orders", openOrderCount],
                     ["Kitchen Active", activeKitchenCount],
                     ["Today Sales", money(todaySales)],
                   ].map(([title, value]) => (
-                    <div key={title} className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
-                      <div className="text-sm font-bold text-zinc-500">{title}</div>
-                      <div className="mt-2 text-2xl font-black text-zinc-950">{value}</div>
+                    <div key={title} className="min-w-0 rounded-lg border border-zinc-200 bg-zinc-50 p-3 sm:p-4">
+                      <div className="break-words text-xs font-bold text-zinc-500 sm:text-sm">{title}</div>
+                      <div className="mt-2 break-words text-xl font-black text-zinc-950 sm:text-2xl">{value}</div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              <div className="flex items-center">
-                <div className="w-full rounded-lg border border-zinc-200 bg-white p-5 shadow-soft">
+              <div className="flex min-w-0 items-center">
+                <div className="min-w-0 w-full rounded-lg border border-zinc-200 bg-white p-4 shadow-soft sm:p-5">
                   <div className="mb-5">
                     <div className="text-sm font-bold uppercase tracking-[.18em] text-zinc-500">Sign In</div>
                     <h2 className="mt-2 text-3xl font-black text-zinc-950">Open POS</h2>
@@ -2141,27 +2200,18 @@
           setView("pos");
         }
 
-        function updateTableStatus(tableId, status) {
-          setState((current) => ({
-            ...current,
-            tables: current.tables.map((table) => {
-              if (table.id !== tableId) return table;
-              if (status === "Available") return { ...table, status, orderId: null };
-              return { ...table, status };
-            }),
-          }));
-        }
-
-        function addItem(menuItem, selectedAddons = []) {
+        function addItem(menuItem, selectedAddons = [], quantity = 1) {
           if (menuItem.soldOut) return;
+          const addQuantity = Math.max(1, Math.round(Number(quantity) || 1));
           const presetNote = menuItem.orderNote || "";
           const addons = selectedAddons.map((addon) => ({
             id: addon.id,
             menuId: addon.id,
             name: addon.name,
             price: Number(addon.price || 0),
+            qty: Math.max(1, Math.round(Number(addon.qty) || 1)),
           }));
-          const addonSignature = addons.map((addon) => addon.id).sort().join("|");
+          const addonSignature = addons.map((addon) => `${addon.id}:${addon.qty}`).sort().join("|");
           let orderId = activeOrderId;
 
           setState((current) => {
@@ -2208,11 +2258,14 @@
                 (line) =>
                   line.menuId === menuItem.id &&
                   line.note === presetNote &&
-                  (line.addons || []).map((addon) => addon.id).sort().join("|") === addonSignature
+                  (line.addons || [])
+                    .map((addon) => `${addon.id}:${Math.max(1, Math.round(Number(addon.qty) || 1))}`)
+                    .sort()
+                    .join("|") === addonSignature
               );
               const lines = existing
                 ? item.items.map((line) =>
-                    line.id === existing.id ? { ...line, qty: line.qty + 1 } : line
+                    line.id === existing.id ? { ...line, qty: line.qty + addQuantity } : line
                   )
                 : [
                     ...item.items,
@@ -2223,7 +2276,7 @@
                       category: menuItem.category,
                       price: Number(menuItem.price),
                       image: menuItem.image,
-                      qty: 1,
+                      qty: addQuantity,
                       note: presetNote,
                       addons,
                     },
@@ -2655,7 +2708,6 @@
                     tables={state.tables}
                     orders={state.orders}
                     onOpenTable={createOrderForTable}
-                    onStatus={updateTableStatus}
                     onTakeaway={createTakeawayOrder}
                   />
                 )}
@@ -2677,10 +2729,16 @@
                     onNote={(lineId, note) =>
                       activeOrder && updateLine(activeOrder.id, lineId, () => ({ note }))
                     }
-                    onRemoveAddon={(lineId, addonId) =>
+                    onAddonQty={(lineId, addonId, delta) =>
                       activeOrder &&
                       updateLine(activeOrder.id, lineId, (line) => ({
-                        addons: (line.addons || []).filter((addon) => addon.id !== addonId),
+                        addons: (line.addons || [])
+                          .map((addon) =>
+                            addon.id === addonId
+                              ? { ...addon, qty: addonQuantity(addon) + delta }
+                              : addon
+                          )
+                          .filter((addon) => addon.id !== addonId || Number(addon.qty || 0) > 0),
                       }))
                     }
                     onDelete={(lineId) => activeOrder && deleteLine(activeOrder.id, lineId)}
@@ -2749,61 +2807,20 @@
         );
       }
 
-      function TablesView({ tables, orders, onOpenTable, onStatus, onTakeaway }) {
-        const [filter, setFilter] = useState("All");
-        const [statusTableId, setStatusTableId] = useState(tables[0]?.id || 1);
-        const visibleTables = filter === "All" ? tables : tables.filter((table) => table.status === filter);
-        const statusCounts = TABLE_STATUSES.reduce((acc, status) => {
-          acc[status] = tables.filter((table) => table.status === status).length;
-          return acc;
-        }, {});
-
+      function TablesView({ tables, orders, onOpenTable, onTakeaway }) {
         return (
           <div className="h-full overflow-auto p-5">
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {["All", ...TABLE_STATUSES].map((status) => (
-                  <button
-                    key={status}
-                    onClick={() => setFilter(status)}
-                    className={cx(
-                      "min-h-12 rounded-lg border px-4 text-sm font-semibold",
-                      filter === status ? "border-orange bg-orange text-black" : "border-line bg-panel text-zinc-300"
-                    )}
-                  >
-                    {status}
-                    {status !== "All" && <span className="ml-2 text-xs opacity-75">{statusCounts[status]}</span>}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <select
-                  value={statusTableId}
-                  onChange={(event) => setStatusTableId(Number(event.target.value))}
-                  className="min-h-12 rounded-lg border border-line bg-panel px-3 text-sm font-bold text-zinc-200 outline-none focus:border-orange"
-                  aria-label="Select table for status change"
-                >
-                  {tables.map((table) => <option key={table.id} value={table.id}>Table {table.id}</option>)}
-                </select>
-                <select
-                  value={tables.find((table) => table.id === statusTableId)?.status || "Available"}
-                  onChange={(event) => onStatus(statusTableId, event.target.value)}
-                  className="min-h-12 rounded-lg border border-line bg-panel px-3 text-sm font-bold text-zinc-200 outline-none focus:border-orange"
-                  aria-label="Change table status"
-                >
-                  {TABLE_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
-                </select>
-                <button
-                  onClick={onTakeaway}
-                  className="min-h-12 rounded-lg bg-orange px-5 font-bold text-black"
-                >
-                  New Takeaway
-                </button>
-              </div>
+            <div className="mb-4 flex justify-end">
+              <button
+                onClick={onTakeaway}
+                className="min-h-12 rounded-lg bg-orange px-5 font-bold text-black"
+              >
+                New Takeaway
+              </button>
             </div>
 
             <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6">
-              {visibleTables.map((table) => {
+              {tables.map((table) => {
                 const order = orders.find((item) => item.id === table.orderId);
                 return (
                   <button
@@ -2848,7 +2865,7 @@
         onAdd,
         onQty,
         onNote,
-        onRemoveAddon,
+        onAddonQty,
         onDelete,
         onDiscount,
         onHold,
@@ -2860,16 +2877,31 @@
         const [category, setCategory] = useState("All");
         const [search, setSearch] = useState("");
         const [configuringItem, setConfiguringItem] = useState(null);
-        const [selectedAddonIds, setSelectedAddonIds] = useState([]);
+        const [addonQuantities, setAddonQuantities] = useState({});
+        const [customAddons, setCustomAddons] = useState([]);
+        const [customAddonForm, setCustomAddonForm] = useState({ name: "", price: "", qty: 1 });
         const [openItemForm, setOpenItemForm] = useState(null);
         const regularCategories = categories.filter(
           (item) => item !== "Set Upgrade" && item !== "Set Drinks" && item !== "Add-ons"
         );
         const addonItems = menuItems.filter((item) => item.category === "Add-ons" && !item.soldOut);
-        const selectedAddons = addonItems.filter((item) => selectedAddonIds.includes(item.id));
+        const selectedAddons = [
+          ...addonItems
+            .filter((item) => Number(addonQuantities[item.id] || 0) > 0)
+            .map((item) => ({ ...item, qty: Number(addonQuantities[item.id] || 0) })),
+          ...customAddons,
+        ];
+        const selectedAddonCount = selectedAddons.reduce((sum, item) => sum + Number(item.qty || 0), 0);
         const configuredPrice = configuringItem
-          ? Number(configuringItem.price || 0) + selectedAddons.reduce((sum, item) => sum + Number(item.price || 0), 0)
+          ? Number(configuringItem.price || 0) + selectedAddons.reduce(
+              (sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0),
+              0
+            )
           : 0;
+        const openItemAddonTotal = (openItemForm?.addons || []).reduce(
+          (sum, addon) => sum + addonUnitTotal(addon),
+          0
+        );
         const totals = calcOrder(order);
         const filtered = menuItems.filter((item) => {
           if (item.category === "Add-ons") return false;
@@ -2885,15 +2917,41 @@
         function chooseMenuItem(item) {
           if (ADDON_ELIGIBLE_CATEGORIES.includes(item.category) && addonItems.length > 0) {
             setConfiguringItem(item);
-            setSelectedAddonIds([]);
+            setAddonQuantities({});
+            setCustomAddons([]);
+            setCustomAddonForm({ name: "", price: "", qty: 1 });
             return;
           }
           onAdd(item, []);
         }
 
-        function toggleAddon(addonId) {
-          setSelectedAddonIds((current) =>
-            current.includes(addonId) ? current.filter((id) => id !== addonId) : [...current, addonId]
+        function adjustAddon(addonId, amount) {
+          setAddonQuantities((current) => {
+            const nextQuantity = Math.max(0, Math.min(99, Number(current[addonId] || 0) + amount));
+            const next = { ...current };
+            if (nextQuantity === 0) delete next[addonId];
+            else next[addonId] = nextQuantity;
+            return next;
+          });
+        }
+
+        function addCustomAddon() {
+          const name = String(customAddonForm.name || "").trim();
+          const price = Math.max(0, Number(customAddonForm.price || 0));
+          const qty = Math.max(1, Math.min(99, Math.round(Number(customAddonForm.qty) || 1)));
+          if (!name) return;
+          setCustomAddons((current) => [
+            ...current,
+            { id: uid("custom-addon"), name, price, qty, isCustom: true },
+          ]);
+          setCustomAddonForm({ name: "", price: "", qty: 1 });
+        }
+
+        function adjustCustomAddon(addonId, amount) {
+          setCustomAddons((current) =>
+            current
+              .map((addon) => addon.id === addonId ? { ...addon, qty: addonQuantity(addon) + amount } : addon)
+              .filter((addon) => addon.id !== addonId || Number(addon.qty || 0) > 0)
           );
         }
 
@@ -2901,12 +2959,41 @@
           if (!configuringItem) return;
           onAdd(configuringItem, selectedAddons);
           setConfiguringItem(null);
-          setSelectedAddonIds([]);
+          setAddonQuantities({});
+          setCustomAddons([]);
+          setCustomAddonForm({ name: "", price: "", qty: 1 });
+        }
+
+        function addOpenItemAddon() {
+          setOpenItemForm((current) => {
+            if (!current) return current;
+            const name = String(current.addonName || "").trim();
+            if (!name) return current;
+            const price = Math.max(0, Number(current.addonPrice || 0));
+            const qty = Math.max(1, Math.min(99, Math.round(Number(current.addonQty) || 1)));
+            return {
+              ...current,
+              addons: [...(current.addons || []), { id: uid("open-addon"), name, price, qty, isCustom: true }],
+              addonName: "",
+              addonPrice: "",
+              addonQty: 1,
+            };
+          });
+        }
+
+        function adjustOpenItemAddon(addonId, amount) {
+          setOpenItemForm((current) => current ? {
+            ...current,
+            addons: (current.addons || [])
+              .map((addon) => addon.id === addonId ? { ...addon, qty: addonQuantity(addon) + amount } : addon)
+              .filter((addon) => addon.id !== addonId || Number(addon.qty || 0) > 0),
+          } : current);
         }
 
         function addOpenItem() {
           const name = String(openItemForm?.name || "").trim();
           const price = Number(openItemForm?.price || 0);
+          const quantity = Math.max(1, Math.round(Number(openItemForm?.qty) || 1));
           if (!name || price <= 0) return;
           onAdd({
             id: uid("open-item"),
@@ -2917,7 +3004,7 @@
             popular: false,
             soldOut: false,
             isOpenItem: true,
-          }, []);
+          }, openItemForm?.addons || [], quantity);
           setOpenItemForm(null);
         }
 
@@ -2938,7 +3025,15 @@
                   Takeaway
                 </button>
                 <button
-                  onClick={() => setOpenItemForm({ name: "", price: "" })}
+                  onClick={() => setOpenItemForm({
+                    name: "",
+                    price: "",
+                    qty: 1,
+                    addons: [],
+                    addonName: "",
+                    addonPrice: "",
+                    addonQty: 1,
+                  })}
                   className="min-h-11 rounded-lg bg-orange px-3 text-sm font-black text-black"
                 >
                   + Open Item
@@ -3039,7 +3134,7 @@
               totals={totals}
               onQty={onQty}
               onNote={onNote}
-              onRemoveAddon={onRemoveAddon}
+              onAddonQty={onAddonQty}
               onDelete={onDelete}
               onDiscount={onDiscount}
               onHold={onHold}
@@ -3057,7 +3152,11 @@
                       <div className="mt-1 text-zinc-400">{money(configuringItem.price)}</div>
                     </div>
                     <button
-                      onClick={() => setConfiguringItem(null)}
+                      onClick={() => {
+                        setConfiguringItem(null);
+                        setAddonQuantities({});
+                        setCustomAddons([]);
+                      }}
                       className="min-h-12 min-w-12 rounded-lg border border-line bg-ink text-lg font-black"
                       aria-label="Close add-on selection"
                     >
@@ -3066,38 +3165,124 @@
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-auto p-5">
-                    <div className="mb-4">
-                      <h4 className="text-xl font-black">Choose Add-ons</h4>
-                      <p className="mt-1 text-sm text-zinc-400">Optional. Select any extras for this main item.</p>
+                    <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+                      <div>
+                        <h4 className="text-xl font-black">Choose Add-ons</h4>
+                        <p className="mt-1 text-sm text-zinc-400">Tap + more than once to add the quantity needed.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddonQuantities({});
+                          setCustomAddons([]);
+                        }}
+                        disabled={selectedAddonCount === 0}
+                        className="min-h-11 rounded-lg border border-line bg-ink px-4 text-sm font-bold text-zinc-300 disabled:opacity-35"
+                      >
+                        Clear All ({selectedAddonCount})
+                      </button>
+                    </div>
+
+                    <div className="mb-4 border-y border-line py-4">
+                      <div className="text-sm font-black uppercase text-orange2">Custom Add-on</div>
+                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_110px_150px_86px]">
+                        <input
+                          value={customAddonForm.name}
+                          onChange={(event) => setCustomAddonForm((current) => ({ ...current, name: event.target.value }))}
+                          placeholder="Add-on name"
+                          className="min-h-12 min-w-0 rounded-lg border border-line bg-ink px-3 text-sm text-white outline-none focus:border-orange"
+                        />
+                        <label className="flex min-h-12 min-w-0 items-center rounded-lg border border-line bg-ink px-3 focus-within:border-orange">
+                          <span className="text-xs font-black text-zinc-500">S$</span>
+                          <input
+                            value={customAddonForm.price}
+                            onChange={(event) => setCustomAddonForm((current) => ({ ...current, price: event.target.value }))}
+                            type="number"
+                            min="0"
+                            step="0.10"
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            className="min-w-0 flex-1 bg-transparent px-2 text-sm font-black text-white outline-none"
+                          />
+                        </label>
+                        <div className="grid grid-cols-[44px_1fr_44px] items-center overflow-hidden rounded-lg border border-line bg-ink">
+                          <button
+                            type="button"
+                            onClick={() => setCustomAddonForm((current) => ({ ...current, qty: Math.max(1, Number(current.qty || 1) - 1) }))}
+                            disabled={Number(customAddonForm.qty || 1) <= 1}
+                            className="min-h-12 font-black disabled:opacity-25"
+                          >-</button>
+                          <span className="text-center font-black text-orange2">{Number(customAddonForm.qty || 1)}</span>
+                          <button
+                            type="button"
+                            onClick={() => setCustomAddonForm((current) => ({ ...current, qty: Math.min(99, Number(current.qty || 1) + 1) }))}
+                            className="min-h-12 bg-orange font-black text-black"
+                          >+</button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={addCustomAddon}
+                          disabled={!String(customAddonForm.name || "").trim()}
+                          className="min-h-12 rounded-lg bg-orange px-3 font-black text-black disabled:opacity-35"
+                        >Add</button>
+                      </div>
+                      {customAddons.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                          {customAddons.map((addon) => (
+                            <div key={addon.id} className="flex flex-wrap items-center gap-2 border-t border-line pt-2 text-sm">
+                              <span className="min-w-0 flex-1 font-bold">{addon.name}</span>
+                              <span className="font-black text-orange2">{money(addonUnitTotal(addon))}</span>
+                              <div className="grid grid-cols-[36px_32px_36px] items-center overflow-hidden rounded border border-line bg-ink">
+                                <button type="button" onClick={() => adjustCustomAddon(addon.id, -1)} className="min-h-9 font-black">-</button>
+                                <span className="text-center font-black text-orange2">{addonQuantity(addon)}</span>
+                                <button type="button" onClick={() => adjustCustomAddon(addon.id, 1)} className="min-h-9 bg-orange font-black text-black">+</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                       {addonItems.map((addon) => {
-                        const selected = selectedAddonIds.includes(addon.id);
+                        const addonQuantity = Number(addonQuantities[addon.id] || 0);
+                        const selected = addonQuantity > 0;
                         return (
-                          <button
+                          <div
                             key={addon.id}
-                            type="button"
-                            onClick={() => toggleAddon(addon.id)}
                             className={cx(
-                              "flex min-h-20 items-center justify-between gap-3 rounded-lg border p-4 text-left",
+                              "flex min-h-24 flex-col justify-between gap-3 rounded-lg border p-3",
                               selected
                                 ? "border-orange bg-orange/15 text-white"
                                 : "border-line bg-ink text-zinc-300"
                             )}
                           >
-                            <span className="min-w-0 flex-1 font-bold leading-5">{addon.name}</span>
-                            <span className="shrink-0 text-lg font-black text-orange2">
-                              {Number(addon.price || 0) > 0 ? `+${money(addon.price)}` : "NOTE"}
-                            </span>
-                            <span
-                              className={cx(
-                                "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-lg font-black",
-                                selected ? "border-orange bg-orange text-black" : "border-zinc-600 bg-panel text-transparent"
-                              )}
-                            >
-                              {selected ? "✓" : "✓"}
-                            </span>
-                          </button>
+                            <div className="flex items-start justify-between gap-3">
+                              <span className="min-w-0 flex-1 font-bold leading-5">{addon.name}</span>
+                              <span className="shrink-0 text-sm font-black text-orange2">
+                                {Number(addon.price || 0) > 0 ? `+${money(addon.price)}` : "NOTE"}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-[48px_1fr_48px] items-center overflow-hidden rounded-lg border border-line bg-panel">
+                              <button
+                                type="button"
+                                onClick={() => adjustAddon(addon.id, -1)}
+                                disabled={!selected}
+                                className="min-h-11 text-xl font-black disabled:opacity-25"
+                                aria-label={`Remove one ${addon.name}`}
+                              >
+                                -
+                              </button>
+                              <div className="text-center text-lg font-black text-orange2">{addonQuantity}</div>
+                              <button
+                                type="button"
+                                onClick={() => adjustAddon(addon.id, 1)}
+                                className="min-h-11 bg-orange text-xl font-black text-black"
+                                aria-label={`Add one ${addon.name}`}
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
                         );
                       })}
                     </div>
@@ -3108,7 +3293,8 @@
                       onClick={() => {
                         onAdd(configuringItem, []);
                         setConfiguringItem(null);
-                        setSelectedAddonIds([]);
+                        setAddonQuantities({});
+                        setCustomAddons([]);
                       }}
                       className="min-h-16 rounded-lg border border-line bg-panel font-black text-zinc-200"
                     >
@@ -3118,7 +3304,7 @@
                       onClick={addConfiguredItem}
                       className="min-h-16 rounded-lg bg-orange px-5 text-lg font-black text-black"
                     >
-                      Add to Order · {money(configuredPrice)}
+                      Add to Order ({selectedAddonCount} add-ons) - {money(configuredPrice)}
                     </button>
                   </div>
                 </div>
@@ -3127,7 +3313,7 @@
 
             {openItemForm && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-                <div className="w-full max-w-md rounded-lg border border-line bg-panel p-5 shadow-soft">
+                <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-lg border border-line bg-panel p-5 shadow-soft">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-sm font-bold uppercase text-orange2">Custom Sale</div>
@@ -3156,12 +3342,91 @@
                       className="min-w-0 flex-1 bg-transparent px-2 text-xl font-black text-white outline-none"
                     />
                   </label>
+                  <label className="mt-4 block text-sm font-bold text-zinc-400">Quantity</label>
+                  <div className="mt-2 grid grid-cols-[64px_1fr_64px] items-center overflow-hidden rounded-lg border border-line bg-ink">
+                    <button
+                      type="button"
+                      onClick={() => setOpenItemForm((current) => ({ ...current, qty: Math.max(1, Number(current.qty || 1) - 1) }))}
+                      disabled={Number(openItemForm.qty || 1) <= 1}
+                      className="min-h-14 text-2xl font-black disabled:opacity-25"
+                    >
+                      -
+                    </button>
+                    <div className="text-center text-2xl font-black text-orange2">{Number(openItemForm.qty || 1)}</div>
+                    <button
+                      type="button"
+                      onClick={() => setOpenItemForm((current) => ({ ...current, qty: Math.min(99, Number(current.qty || 1) + 1) }))}
+                      className="min-h-14 bg-orange text-2xl font-black text-black"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div className="mt-5 border-t border-line pt-5">
+                    <div className="text-sm font-black uppercase text-orange2">Custom Add-on</div>
+                    <input
+                      value={openItemForm.addonName || ""}
+                      onChange={(event) => setOpenItemForm((current) => ({ ...current, addonName: event.target.value }))}
+                      placeholder="Example: Extra chicken"
+                      className="mt-3 min-h-12 w-full rounded-lg border border-line bg-ink px-3 text-white outline-none focus:border-orange"
+                    />
+                    <div className="mt-2 grid grid-cols-[minmax(0,1fr)_132px_76px] gap-2">
+                      <label className="flex min-h-12 min-w-0 items-center rounded-lg border border-line bg-ink px-3 focus-within:border-orange">
+                        <span className="text-xs font-black text-zinc-500">S$</span>
+                        <input
+                          value={openItemForm.addonPrice || ""}
+                          onChange={(event) => setOpenItemForm((current) => ({ ...current, addonPrice: event.target.value }))}
+                          type="number"
+                          min="0"
+                          step="0.10"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          className="min-w-0 flex-1 bg-transparent px-2 font-black text-white outline-none"
+                        />
+                      </label>
+                      <div className="grid grid-cols-[38px_1fr_38px] items-center overflow-hidden rounded-lg border border-line bg-ink">
+                        <button
+                          type="button"
+                          onClick={() => setOpenItemForm((current) => ({ ...current, addonQty: Math.max(1, Number(current.addonQty || 1) - 1) }))}
+                          disabled={Number(openItemForm.addonQty || 1) <= 1}
+                          className="min-h-12 font-black disabled:opacity-25"
+                        >-</button>
+                        <span className="text-center font-black text-orange2">{Number(openItemForm.addonQty || 1)}</span>
+                        <button
+                          type="button"
+                          onClick={() => setOpenItemForm((current) => ({ ...current, addonQty: Math.min(99, Number(current.addonQty || 1) + 1) }))}
+                          className="min-h-12 bg-orange font-black text-black"
+                        >+</button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={addOpenItemAddon}
+                        disabled={!String(openItemForm.addonName || "").trim()}
+                        className="min-h-12 rounded-lg bg-orange px-2 font-black text-black disabled:opacity-35"
+                      >Add</button>
+                    </div>
+                    {(openItemForm.addons || []).length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {openItemForm.addons.map((addon) => (
+                          <div key={addon.id} className="flex items-center gap-2 border-t border-line pt-2 text-sm">
+                            <span className="min-w-0 flex-1 font-bold">{addon.name}</span>
+                            <span className="font-black text-orange2">{money(addonUnitTotal(addon))}</span>
+                            <div className="grid grid-cols-[34px_30px_34px] items-center overflow-hidden rounded border border-line bg-ink">
+                              <button type="button" onClick={() => adjustOpenItemAddon(addon.id, -1)} className="min-h-9 font-black">-</button>
+                              <span className="text-center font-black text-orange2">{addonQuantity(addon)}</span>
+                              <button type="button" onClick={() => adjustOpenItemAddon(addon.id, 1)} className="min-h-9 bg-orange font-black text-black">+</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <button
                     onClick={addOpenItem}
                     disabled={!String(openItemForm.name || "").trim() || Number(openItemForm.price || 0) <= 0}
                     className="mt-5 min-h-14 w-full rounded-lg bg-orange text-lg font-black text-black disabled:opacity-40"
                   >
-                    Add to Order
+                    Add {Number(openItemForm.qty || 1)} to Order - {money((Number(openItemForm.price || 0) + openItemAddonTotal) * Number(openItemForm.qty || 1))}
                   </button>
                 </div>
               </div>
@@ -3170,7 +3435,7 @@
         );
       }
 
-      function OrderPanel({ order, totals, onQty, onNote, onRemoveAddon, onDelete, onDiscount, onHold, onSend, onPay }) {
+      function OrderPanel({ order, totals, onQty, onNote, onAddonQty, onDelete, onDiscount, onHold, onSend, onPay }) {
         const [voucherAmount, setVoucherAmount] = useState("");
 
         useEffect(() => {
@@ -3234,16 +3499,31 @@
                             <div className="mt-2 space-y-1">
                               {line.addons.map((addon) => (
                                 <div key={addon.id} className="flex items-center justify-between gap-2 rounded-md bg-ink px-2 py-1.5 text-xs">
-                                  <span className="min-w-0 flex-1 font-semibold text-orange2">+ {addon.name}</span>
-                                  <span className="shrink-0 text-zinc-300">{money(addon.price)}</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => onRemoveAddon(line.id, addon.id)}
-                                    className="min-h-7 min-w-7 rounded border border-line text-zinc-400"
-                                    aria-label={`Remove ${addon.name}`}
-                                  >
-                                    X
-                                  </button>
+                                  <span className="min-w-0 flex-1 font-semibold text-orange2">
+                                    + {addonLabel(addon)}
+                                  </span>
+                                  <span className="shrink-0 text-zinc-300">
+                                    {money(addonUnitTotal(addon))}
+                                  </span>
+                                  <div className="grid shrink-0 grid-cols-[30px_28px_30px] items-center overflow-hidden rounded border border-line">
+                                    <button
+                                      type="button"
+                                      onClick={() => onAddonQty(line.id, addon.id, -1)}
+                                      className="min-h-8 font-black text-zinc-300"
+                                      aria-label={`Remove one ${addon.name}`}
+                                    >
+                                      -
+                                    </button>
+                                    <span className="text-center font-black text-orange2">{addonQuantity(addon)}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => onAddonQty(line.id, addon.id, 1)}
+                                      className="min-h-8 bg-orange font-black text-black"
+                                      aria-label={`Add one ${addon.name}`}
+                                    >
+                                      +
+                                    </button>
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -3543,7 +3823,7 @@
                                     </span>
                                     {(item.addons || []).map((addon) => (
                                       <span key={addon.id} className="mt-1 block text-sm font-black text-orange2">
-                                        + {addon.name}
+                                        + {addonLabel(addon)}
                                       </span>
                                     ))}
                                     {item.note && <span className="mt-1 block text-sm font-semibold text-orange2">{item.note}</span>}
@@ -3756,7 +4036,7 @@
                   <div className="mt-2 flex-1 space-y-1.5">
                     {(ticket.items || []).map((item) => {
                       const itemDone = Boolean(item.kitchenDone);
-                      const addons = (item.addons || []).map((addon) => addon.name).filter(Boolean);
+                      const addons = (item.addons || []).map(addonLabel).filter(Boolean);
                       return (
                         <button
                           key={item.id}
@@ -4139,7 +4419,7 @@
                             <div className="min-w-0 flex-1">
                               <div className="font-bold">{item.qty}x {item.name}</div>
                               {(item.addons || []).map((addon) => (
-                                <div key={addon.id} className="mt-1 text-sm font-bold text-orange2">+ {addon.name}</div>
+                                <div key={addon.id} className="mt-1 text-sm font-bold text-orange2">+ {addonLabel(addon)}</div>
                               ))}
                               {item.note ? <div className="mt-1 text-sm text-zinc-400">{item.note}</div> : null}
                             </div>
@@ -4147,7 +4427,7 @@
                               <div className="font-black">{money(baseLineTotal(item))}</div>
                               {(item.addons || []).map((addon) => (
                                 <div key={`${addon.id}-price`} className="mt-1 text-sm font-bold text-orange2">
-                                  + {money(Number(addon.price || 0) * Number(item.qty || 0))}
+                                  + {money(addonLineTotal(addon, item.qty))}
                                 </div>
                               ))}
                             </div>
@@ -4246,7 +4526,7 @@
                         <div className="font-bold">{item.qty}x {item.name}</div>
                         {(item.addons || []).map((addon) => (
                           <div key={addon.id} className="mt-1 text-sm font-bold text-orange2">
-                            + {addon.name} ({money(addon.price)})
+                            + {addonLabel(addon)} ({money(addonUnitTotal(addon))})
                           </div>
                         ))}
                         <div className="text-sm text-zinc-400">{item.note || item.category}</div>
@@ -4428,8 +4708,8 @@
             itemStats[item.name].sales += Number(item.price || 0) * Number(item.qty || 0);
             (item.addons || []).forEach((addon) => {
               if (!itemStats[addon.name]) itemStats[addon.name] = { name: addon.name, qty: 0, sales: 0 };
-              itemStats[addon.name].qty += Number(item.qty || 0);
-              itemStats[addon.name].sales += Number(addon.price || 0) * Number(item.qty || 0);
+              itemStats[addon.name].qty += addonQuantity(addon) * Number(item.qty || 0);
+              itemStats[addon.name].sales += addonLineTotal(addon, item.qty);
             });
           });
         });
@@ -4516,7 +4796,7 @@
                     : payment.reference || "-",
                   payment.collectedBy || "-",
                   (payment.items || []).map((item) => {
-                    const addons = (item.addons || []).map((addon) => ` + ${addon.name}`).join("");
+                    const addons = (item.addons || []).map((addon) => ` + ${addonLabel(addon)}`).join("");
                     return `${item.qty} x ${item.name}${addons}${item.note ? ` (${item.note})` : ""}`;
                   }).join(", "),
                   payment.subtotal,
@@ -7361,8 +7641,8 @@
                       </div>
                       {(item.addons || []).map((addon) => (
                         <div key={addon.id} className="mt-1 flex justify-between gap-3 pl-4 text-zinc-400">
-                          <span>+ {addon.name}</span>
-                          <span>{money(Number(addon.price || 0) * Number(item.qty || 0))}</span>
+                          <span>+ {addonLabel(addon)}</span>
+                          <span>{money(addonLineTotal(addon, item.qty))}</span>
                         </div>
                       ))}
                     </div>
@@ -7504,8 +7784,8 @@
                     </div>
                     {(item.addons || []).map((addon) => (
                       <div key={addon.id} className="mt-1 flex justify-between gap-4 pl-4 text-xs text-zinc-500">
-                        <span>+ {addon.name}</span>
-                        <span>{money(Number(addon.price || 0) * Number(item.qty || 0))}</span>
+                        <span>+ {addonLabel(addon)}</span>
+                        <span>{money(addonLineTotal(addon, item.qty))}</span>
                       </div>
                     ))}
                     {item.note ? <div className="mt-1 pl-4 text-xs text-zinc-500">Note: {item.note}</div> : null}
@@ -7752,14 +8032,15 @@
                   onClick={() => {
                     safeStorageRemove(STORAGE_KEY);
                     safeStorageRemove(SESSION_KEY);
-                    safeStorageRemove(CLOUD_CONFIG_KEY);
-                    safeStorageRemove(DEVICE_ID_KEY);
                     window.location.reload();
                   }}
                   className="mt-3 min-h-12 w-full rounded-lg border border-zinc-300 bg-white px-5 font-bold text-zinc-800"
                 >
                   Repair This Device
                 </button>
+                <p className="mt-3 break-words text-xs leading-5 text-zinc-500">
+                  Error: {String(this.state.error?.message || "Local device data could not be read").slice(0, 180)}
+                </p>
               </section>
             </main>
           );
