@@ -3,8 +3,66 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Pho Stop(Downtown Gallery) POS</title>
+    <script>
+      (function () {
+        var pendingMessage = "";
+
+        function escapeBootMessage(value) {
+          var entities = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+          return String(value || "").replace(/[&<>\"]/g, function (character) {
+            return entities[character];
+          });
+        }
+
+        function repairThisDevice() {
+          try {
+            window.localStorage.removeItem("aurora-ipad-pos-state-v1");
+            window.localStorage.removeItem("aurora-ipad-pos-session-v1");
+            window.localStorage.removeItem("aurora-ipad-pos-cloud-config-v1");
+            window.localStorage.removeItem("aurora-ipad-pos-device-id-v1");
+          } catch (error) {
+            // Reload still helps when Safari blocks storage access completely.
+          }
+          window.location.reload();
+        }
+
+        function showBootError(message) {
+          pendingMessage = String(message || "The POS could not start on this device.");
+          var root = document.getElementById("root");
+          if (!root || root.getAttribute("data-pos-ready") === "true") return;
+          root.innerHTML =
+            '<main style="min-height:100vh;display:grid;place-items:center;padding:24px;background:#f7f7f5;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-sizing:border-box">' +
+              '<section style="width:100%;max-width:420px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;padding:24px;box-shadow:0 16px 40px rgba(0,0,0,.12);box-sizing:border-box">' +
+                '<div style="font-size:28px;font-weight:800">Pho Stop POS</div>' +
+                '<p style="margin:12px 0 18px;color:#52525b;line-height:1.55">' + escapeBootMessage(pendingMessage) + '</p>' +
+                '<button onclick="window.location.reload()" style="width:100%;min-height:52px;border:0;border-radius:8px;background:#f97316;color:#fff;font-size:17px;font-weight:800">Reload POS</button>' +
+                '<button onclick="window.__repairPosDevice()" style="width:100%;min-height:48px;margin-top:10px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;color:#27272a;font-size:16px;font-weight:700">Repair This Device</button>' +
+              '</section>' +
+            '</main>';
+        }
+
+        window.__repairPosDevice = repairThisDevice;
+        window.__showPosBootError = showBootError;
+        window.addEventListener("error", function (event) {
+          showBootError((event && event.message) || "A required POS file failed to load. Check the internet connection and reload.");
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event && event.reason;
+          showBootError((reason && reason.message) || "The POS could not finish loading. Please reload.");
+        });
+        window.addEventListener("DOMContentLoaded", function () {
+          if (pendingMessage) showBootError(pendingMessage);
+          setTimeout(function () {
+            var root = document.getElementById("root");
+            if (root && root.getAttribute("data-pos-ready") !== "true") {
+              showBootError("The POS is taking too long to load. Check the internet connection, then reload.");
+            }
+          }, 25000);
+        });
+      })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
@@ -346,6 +404,33 @@
       ];
       const SUPPLIER_PAYMENT_METHODS = ["Cash", "Card", "Bank Transfer", "PayNow / QR Pay", "Credit"];
       const SUPPLIER_STATUSES = ["Paid", "Unpaid"];
+
+      function safeStorageGet(key) {
+        try {
+          return window.localStorage.getItem(key);
+        } catch (error) {
+          console.warn("POS storage read failed", error);
+          return null;
+        }
+      }
+
+      function safeStorageSet(key, value) {
+        try {
+          window.localStorage.setItem(key, value);
+          return true;
+        } catch (error) {
+          console.warn("POS storage write failed", error);
+          return false;
+        }
+      }
+
+      function safeStorageRemove(key) {
+        try {
+          window.localStorage.removeItem(key);
+        } catch (error) {
+          console.warn("POS storage remove failed", error);
+        }
+      }
 
       function confirmDemoReset() {
         const enteredPin = window.prompt("Enter Reset Demo PIN");
@@ -1042,7 +1127,7 @@
 
       function loadState() {
         try {
-          const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+          const saved = JSON.parse(safeStorageGet(STORAGE_KEY));
           return hydrateState(saved);
         } catch (error) {
           return emptyState();
@@ -1461,7 +1546,7 @@
       function loadCloudConfig() {
         const sharedConfig = cloudConfigFromUrl();
         if (sharedConfig) {
-          localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(sharedConfig));
+          safeStorageSet(CLOUD_CONFIG_KEY, JSON.stringify(sharedConfig));
           if (window.history?.replaceState) {
             window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
           }
@@ -1469,7 +1554,7 @@
         }
 
         try {
-          const saved = JSON.parse(localStorage.getItem(CLOUD_CONFIG_KEY));
+          const saved = JSON.parse(safeStorageGet(CLOUD_CONFIG_KEY));
           const legacyRestaurantIds = ["mou-zhao-pai-noodle-pos", "photop-admin", "phostop-pte-ltd-pos"];
           if (
             !saved?.projectId ||
@@ -1485,10 +1570,10 @@
       }
 
       function getDeviceId() {
-        const saved = localStorage.getItem(DEVICE_ID_KEY);
+        const saved = safeStorageGet(DEVICE_ID_KEY);
         if (saved) return saved;
         const next = uid("device");
-        localStorage.setItem(DEVICE_ID_KEY, next);
+        safeStorageSet(DEVICE_ID_KEY, next);
         return next;
       }
 
@@ -1636,14 +1721,14 @@
               : staffIsManager
               ? { id: user.id, name: user.name, role: "manager", title: user.role, isStaff: true }
               : { id: user.id, name: user.name, role: "staff", title: user.role, isStaff: true };
-          localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+          safeStorageSet(SESSION_KEY, JSON.stringify(session));
           onLogin(session);
         }
 
         function resetDemo() {
           if (!confirmDemoReset()) return;
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem(SESSION_KEY);
+          safeStorageRemove(STORAGE_KEY);
+          safeStorageRemove(SESSION_KEY);
           setState(emptyState());
           setPin("");
           setMessage("Demo data reset. You can start a fresh test now.");
@@ -1977,14 +2062,14 @@
         }, [state.orders, activeOrderId, selectedOrderId, selectedTableId]);
 
         function logout() {
-          localStorage.removeItem(SESSION_KEY);
+          safeStorageRemove(SESSION_KEY);
           setUser(null);
         }
 
         function resetDemo() {
           if (!confirmDemoReset()) return;
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem(SESSION_KEY);
+          safeStorageRemove(STORAGE_KEY);
+          safeStorageRemove(SESSION_KEY);
           setState(emptyState());
           setActiveOrderId(null);
           setSelectedOrderId(null);
@@ -7476,7 +7561,7 @@
         const lastRemoteRevisionRef = useRef(0);
         const [user, setUser] = useState(() => {
           try {
-            return JSON.parse(localStorage.getItem(SESSION_KEY));
+            return JSON.parse(safeStorageGet(SESSION_KEY));
           } catch (error) {
             return null;
           }
@@ -7484,7 +7569,7 @@
 
         useEffect(() => {
           stateRef.current = state;
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+          safeStorageSet(STORAGE_KEY, JSON.stringify(state));
           document.title = `${state.settings?.businessName || defaultSettings.businessName} | ${state.settings?.tagline || defaultSettings.tagline}`;
 
           if (!remoteRef.current || !remoteReadyRef.current || !hasCloudConfig(cloudConfig)) return;
@@ -7512,7 +7597,7 @@
         }, [state]);
 
         useEffect(() => {
-          localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfig));
+          safeStorageSet(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfig));
         }, [cloudConfig]);
 
         useEffect(() => {
@@ -7639,7 +7724,51 @@
         return publicReceipt ? <PublicReceiptView receipt={publicReceipt} /> : <App />;
       }
 
-      ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
+      class AppErrorBoundary extends React.Component {
+        constructor(props) {
+          super(props);
+          this.state = { error: null };
+        }
+
+        static getDerivedStateFromError(error) {
+          return { error };
+        }
+
+        componentDidCatch(error, info) {
+          console.error("POS render failed", error, info);
+        }
+
+        render() {
+          if (!this.state.error) return this.props.children;
+          return (
+            <main className="grid min-h-screen place-items-center bg-zinc-100 p-6 text-zinc-950">
+              <section className="w-full max-w-md rounded-lg border border-zinc-300 bg-white p-6 shadow-xl">
+                <h1 className="text-2xl font-black">Pho Stop POS</h1>
+                <p className="mt-3 leading-6 text-zinc-600">This device could not finish opening the POS. Reload the page to reconnect.</p>
+                <button onClick={() => window.location.reload()} className="mt-5 min-h-14 w-full rounded-lg bg-orange px-5 text-lg font-black text-white">
+                  Reload POS
+                </button>
+                <button
+                  onClick={() => {
+                    safeStorageRemove(STORAGE_KEY);
+                    safeStorageRemove(SESSION_KEY);
+                    safeStorageRemove(CLOUD_CONFIG_KEY);
+                    safeStorageRemove(DEVICE_ID_KEY);
+                    window.location.reload();
+                  }}
+                  className="mt-3 min-h-12 w-full rounded-lg border border-zinc-300 bg-white px-5 font-bold text-zinc-800"
+                >
+                  Repair This Device
+                </button>
+              </section>
+            </main>
+          );
+        }
+      }
+
+      const rootElement = document.getElementById("root");
+      ReactDOM.createRoot(rootElement).render(<AppErrorBoundary><Root /></AppErrorBoundary>);
+      rootElement.dataset.posReady = "true";
     </script>
   </body>
 </html>
