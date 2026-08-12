@@ -389,7 +389,7 @@
         ["Lemongrass Pandan Drink", 0.8], ["Iced Herbal Tea", 0.8],
         ["Viet Iced Lemon Tea", 0.8], ["Plum Lime Soda", 0.8], ["Soda + Lime", 0.8],
       ].map(([name, price]) => ({ name, price }));
-      const PAYMENT_METHODS = ["Cash", "Card", "PayNow / QR Pay", "Split Bill"];
+      const PAYMENT_METHODS = ["Card", "Cash", "PayNow / QR Pay", "Split Bill"];
       const KDS_STATUSES = ["New", "Preparing", "Ready", "Served"];
       const TABLE_STATUSES = ["Available", "Occupied", "Reserved", "Cleaning"];
       const LEAVE_TYPES = ["Annual Leave", "Medical Leave", "Unpaid Leave", "Emergency Leave", "Off Day", "Other"];
@@ -2347,6 +2347,27 @@
           setView("kds");
         }
 
+        function sendPaidOrderToKitchen(payment) {
+          if (!payment || payment.voided || (payment.items || []).length === 0) return;
+          const ticket = {
+            id: uid("ticket"),
+            orderId: payment.orderId,
+            paymentId: payment.id,
+            orderNumber: payment.orderNumber,
+            tableId: payment.tableId,
+            items: (payment.items || []).map((item) => ({ ...item })),
+            status: "New",
+            createdAt: new Date().toISOString(),
+            resentFromPaidHistory: true,
+          };
+          setState((current) => ({
+            ...current,
+            kitchenTickets: [ticket, ...current.kitchenTickets],
+          }));
+          playOrderBell();
+          setView("kds");
+        }
+
         function updateDiscount(orderId, discountChoice) {
           const voucherAmount = discountChoice === "voucher10"
             ? 10
@@ -2775,6 +2796,7 @@
                     onCancel={cancelOrder}
                     onVoidPayment={voidPaidPayment}
                     onReceipt={setReceipt}
+                    onSendPaidToKitchen={sendPaidOrderToKitchen}
                     onTables={() => setView("tables")}
                   />
                 )}
@@ -3674,7 +3696,7 @@
                   onClick={onSend}
                   data-testid="send-to-kitchen"
                   disabled={!order || (order.items || []).length === 0}
-                  className="min-h-14 rounded-lg border border-sky-400/40 bg-sky-500/10 font-bold text-sky-200 disabled:opacity-40"
+                  className="min-h-14 rounded-lg border border-cyan-200 bg-cyan-400 font-black text-zinc-950 shadow-[0_0_22px_rgba(34,211,238,0.38)] transition active:scale-[.98] disabled:shadow-none disabled:opacity-40"
                 >
                   Send to Kitchen
                 </button>
@@ -4027,6 +4049,11 @@
                       <div className="text-xs font-semibold text-zinc-400">
                         {ticket.tableId ? `Table ${ticket.tableId}` : "Takeaway"} / {displayTime(ticket.createdAt)}
                       </div>
+                      {ticket.resentFromPaidHistory && (
+                        <span className="mt-1 inline-flex rounded border border-fuchsia-300 bg-fuchsia-500/20 px-1.5 py-0.5 text-[10px] font-black text-fuchsia-100">
+                          PAID RE-SEND
+                        </span>
+                      )}
                     </div>
                     <span className={cx("shrink-0 rounded-md border px-2 py-1 text-[11px] font-black", statusClass(ticket.status))}>
                       {ticket.status}
@@ -4156,12 +4183,12 @@
         );
       }
 
-      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onTables }) {
+      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onSendPaidToKitchen, onTables }) {
         const [listMode, setListMode] = useState("unpaid");
         const [historySearch, setHistorySearch] = useState("");
         const [historyDate, setHistoryDate] = useState(todayKey());
         const [selectedPaymentId, setSelectedPaymentId] = useState(null);
-        const [method, setMethod] = useState("Cash");
+        const [method, setMethod] = useState("Card");
         const [splitCount, setSplitCount] = useState(2);
         const [cashReceived, setCashReceived] = useState("");
         const [paymentRef, setPaymentRef] = useState("");
@@ -4210,6 +4237,7 @@
             return;
           }
           setCashReceived(calcOrder(selectedOrder).total.toFixed(2));
+          setMethod("Card");
           setPaymentRef("");
         }, [selectedOrder?.id]);
 
@@ -4242,6 +4270,13 @@
           }
           const result = onVoidPayment(selectedPayment, reason);
           window.alert(result?.message || (result?.ok ? "Receipt voided." : "Unable to void receipt."));
+        }
+
+        function resendPaidReceiptToKitchen() {
+          if (!selectedPayment || selectedPayment.voided || (selectedPayment.items || []).length === 0) return;
+          const label = selectedPayment.tableId ? `Table ${selectedPayment.tableId}` : "Takeaway";
+          if (!window.confirm(`Send ${selectedPayment.orderNumber} (${label}) to Kitchen KDS again?`)) return;
+          onSendPaidToKitchen(selectedPayment);
         }
 
         return (
@@ -4481,13 +4516,21 @@
                     </div>
                   )}
                 </div>
-                <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-line bg-panel p-3 sm:p-4">
+                <div className="grid shrink-0 grid-cols-1 gap-3 border-t border-line bg-panel p-3 sm:grid-cols-3 sm:p-4">
                   <button
                     onClick={() => selectedPayment && onReceipt(selectedPayment)}
                     disabled={!selectedPayment}
                     className="min-h-14 w-full rounded-lg bg-orange text-base font-black text-black disabled:opacity-40"
                   >
                     Open / Print Receipt
+                  </button>
+                  <button
+                    onClick={resendPaidReceiptToKitchen}
+                    disabled={!selectedPayment || selectedPayment.voided || (selectedPayment.items || []).length === 0}
+                    data-testid="paid-send-to-kds"
+                    className="min-h-14 w-full rounded-lg border border-cyan-200 bg-cyan-400 px-2 text-base font-black text-zinc-950 shadow-[0_0_22px_rgba(34,211,238,0.38)] transition active:scale-[.98] disabled:shadow-none disabled:opacity-35"
+                  >
+                    Send Kitchen KDS
                   </button>
                   <button
                     onClick={voidPaidReceipt}
