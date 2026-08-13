@@ -332,6 +332,7 @@
 
       const STORAGE_KEY = "aurora-ipad-pos-state-v1";
       const KDS_HIDDEN_KEY = "aurora-ipad-pos-kds-hidden-v1";
+      const KDS_PROGRESS_KEY = "aurora-ipad-pos-kds-progress-v1";
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
@@ -1887,6 +1888,38 @@
         }
       }
 
+      function loadKitchenTicketProgress() {
+        try {
+          const saved = JSON.parse(safeStorageGet(KDS_PROGRESS_KEY));
+          return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+        } catch (error) {
+          return {};
+        }
+      }
+
+      function applyLocalKitchenProgress(ticket, progress) {
+        if (!ticket) return ticket;
+        const hasLocalProgress = progress && typeof progress === "object";
+        const doneItemIds = new Set(
+          hasLocalProgress
+            ? progress.doneItemIds || []
+            : (ticket.items || []).filter((item) => item.kitchenDone).map((item) => item.id)
+        );
+        const completed = hasLocalProgress
+          ? Boolean(progress.completed)
+          : Boolean(ticket.archived || ticket.status === "Served");
+        const status = hasLocalProgress
+          ? progress.status || (completed ? "Served" : doneItemIds.size ? "Preparing" : "New")
+          : ticket.status || "New";
+        return {
+          ...ticket,
+          items: (ticket.items || []).map((item) => ({ ...item, kitchenDone: doneItemIds.has(item.id) })),
+          status: completed ? "Served" : status,
+          archived: completed,
+          localCompletedAt: hasLocalProgress ? progress.completedAt || null : ticket.archivedAt || null,
+        };
+      }
+
       function orderItemsSignature(items) {
         return (items || [])
           .map((item) => {
@@ -1923,7 +1956,13 @@
         return classes.filter(Boolean).join(" ");
       }
 
-      function LoginScreen({ state, setState, onLogin, hiddenKitchenTicketIds = [] }) {
+      function LoginScreen({
+        state,
+        setState,
+        onLogin,
+        hiddenKitchenTicketIds = [],
+        kitchenTicketProgress = {},
+      }) {
         const [mode, setMode] = useState("staff");
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
         const settings = { ...defaultSettings, ...(state.settings || {}) };
@@ -1946,13 +1985,10 @@
         const todaySales = todayPayments.reduce((sum, payment) => sum + Number(payment.total || 0), 0);
         const openOrderCount = state.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status)).length;
         const hiddenKitchenTicketIdSet = new Set(hiddenKitchenTicketIds);
-        const activeKitchenCount = state.kitchenTickets.filter(
-          (ticket) =>
-            !hiddenKitchenTicketIdSet.has(ticket.id) &&
-            !ticket.deletedAt &&
-            !ticket.archived &&
-            ticket.status !== "Served"
-        ).length;
+        const activeKitchenCount = state.kitchenTickets
+          .filter((ticket) => !hiddenKitchenTicketIdSet.has(ticket.id) && !ticket.deletedAt)
+          .map((ticket) => applyLocalKitchenProgress(ticket, kitchenTicketProgress[ticket.id]))
+          .filter((ticket) => !ticket.archived && ticket.status !== "Served").length;
         const onDutyCount = state.timecards.filter((card) => card.date === todayKey() && !card.clockOut).length;
         const availableTableCount = state.tables.filter((table) => table.status === "Available").length;
         const selectedInitials = selectedStaff.name
@@ -1988,6 +2024,8 @@
           if (!confirmDemoReset()) return;
           safeStorageRemove(STORAGE_KEY);
           safeStorageRemove(SESSION_KEY);
+          safeStorageRemove(KDS_HIDDEN_KEY);
+          safeStorageRemove(KDS_PROGRESS_KEY);
           setState(emptyState());
           setPin("");
           setMessage("Demo data reset. You can start a fresh test now.");
@@ -2296,6 +2334,8 @@
         syncStatus,
         hiddenKitchenTicketIds,
         setHiddenKitchenTicketIds,
+        kitchenTicketProgress,
+        setKitchenTicketProgress,
       }) {
         const settings = { ...defaultSettings, ...(state.settings || {}) };
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
@@ -2319,8 +2359,8 @@
           () =>
             (state.kitchenTickets || []).filter(
               (ticket) => !hiddenKitchenTicketIdSet.has(ticket.id)
-            ),
-          [state.kitchenTickets, hiddenKitchenTicketIdSet]
+            ).map((ticket) => applyLocalKitchenProgress(ticket, kitchenTicketProgress?.[ticket.id])),
+          [state.kitchenTickets, hiddenKitchenTicketIdSet, kitchenTicketProgress]
         );
         const syncTone =
           syncStatus.kind === "online"
@@ -2784,53 +2824,56 @@
         }
 
         function updateKitchenStatus(ticketId, status) {
-          setState((current) => ({
-            ...current,
-            kitchenTickets: current.kitchenTickets.map((ticket) =>
-              ticket.id === ticketId
-                ? { ...ticket, status, archived: false, deletedAt: null, updatedAt: new Date().toISOString() }
-                : ticket
-            ),
+          setKitchenTicketProgress((current) => ({
+            ...(current || {}),
+            [ticketId]: {
+              ...(current?.[ticketId] || {}),
+              doneItemIds: status === "New" ? [] : current?.[ticketId]?.doneItemIds || [],
+              status,
+              completed: false,
+              completedAt: null,
+              updatedAt: new Date().toISOString(),
+            },
           }));
         }
 
         function toggleKitchenItem(ticketId, itemId) {
           const now = new Date().toISOString();
-          setState((current) => ({
-            ...current,
-            kitchenTickets: current.kitchenTickets.map((ticket) => {
-              if (ticket.id !== ticketId) return ticket;
-              const items = ticket.items.map((item) =>
-                item.id === itemId ? { ...item, kitchenDone: !item.kitchenDone } : item
-              );
-              const allDone = items.length > 0 && items.every((item) => item.kitchenDone);
-              const nextStatus = allDone
-                ? "Ready"
-                : ticket.status === "Ready" || ticket.status === "New"
-                ? "Preparing"
-                : ticket.status;
-              return { ...ticket, items, status: nextStatus, updatedAt: now };
-            }),
+          const ticket = visibleKitchenTickets.find((item) => item.id === ticketId);
+          if (!ticket) return;
+          const doneItemIds = new Set(
+            (ticket.items || []).filter((item) => item.kitchenDone).map((item) => item.id)
+          );
+          if (doneItemIds.has(itemId)) doneItemIds.delete(itemId);
+          else doneItemIds.add(itemId);
+          const allDone = (ticket.items || []).length > 0 && doneItemIds.size === ticket.items.length;
+          setKitchenTicketProgress((current) => ({
+            ...(current || {}),
+            [ticketId]: {
+              ...(current?.[ticketId] || {}),
+              doneItemIds: Array.from(doneItemIds),
+              status: allDone ? "Ready" : doneItemIds.size ? "Preparing" : "New",
+              completed: false,
+              completedAt: null,
+              updatedAt: now,
+            },
           }));
         }
 
         function confirmKitchenTicket(ticketId) {
           const now = new Date().toISOString();
-          setState((current) => ({
-            ...current,
-            kitchenTickets: current.kitchenTickets.map((ticket) =>
-              ticket.id === ticketId
-                ? {
-                    ...ticket,
-                    items: (ticket.items || []).map((item) => ({ ...item, kitchenDone: true })),
-                    status: "Served",
-                    archived: true,
-                    confirmedAt: now,
-                    archivedAt: now,
-                    updatedAt: now,
-                  }
-                : ticket
-            ),
+          const ticket = visibleKitchenTickets.find((item) => item.id === ticketId);
+          if (!ticket) return;
+          setKitchenTicketProgress((current) => ({
+            ...(current || {}),
+            [ticketId]: {
+              ...(current?.[ticketId] || {}),
+              doneItemIds: (ticket.items || []).map((item) => item.id),
+              status: "Served",
+              completed: true,
+              completedAt: now,
+              updatedAt: now,
+            },
           }));
         }
 
@@ -8172,6 +8215,7 @@
         const [state, setState] = useState(loadState);
         const [cloudConfig, setCloudConfig] = useState(loadCloudConfig);
         const [hiddenKitchenTicketIds, setHiddenKitchenTicketIds] = useState(loadHiddenKitchenTicketIds);
+        const [kitchenTicketProgress, setKitchenTicketProgress] = useState(loadKitchenTicketProgress);
         const [syncStatus, setSyncStatus] = useState({
           kind: "local",
           label: "Local",
@@ -8240,6 +8284,10 @@
         useEffect(() => {
           safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(hiddenKitchenTicketIds));
         }, [hiddenKitchenTicketIds]);
+
+        useEffect(() => {
+          safeStorageSet(KDS_PROGRESS_KEY, JSON.stringify(kitchenTicketProgress));
+        }, [kitchenTicketProgress]);
 
         useEffect(() => {
           remoteRef.current = null;
@@ -8354,6 +8402,7 @@
               setState={setState}
               onLogin={setUser}
               hiddenKitchenTicketIds={hiddenKitchenTicketIds}
+              kitchenTicketProgress={kitchenTicketProgress}
             />
           );
         }
@@ -8369,6 +8418,8 @@
             syncStatus={syncStatus}
             hiddenKitchenTicketIds={hiddenKitchenTicketIds}
             setHiddenKitchenTicketIds={setHiddenKitchenTicketIds}
+            kitchenTicketProgress={kitchenTicketProgress}
+            setKitchenTicketProgress={setKitchenTicketProgress}
           />
         );
       }
@@ -8406,6 +8457,8 @@
                   onClick={() => {
                     safeStorageRemove(STORAGE_KEY);
                     safeStorageRemove(SESSION_KEY);
+                    safeStorageRemove(KDS_HIDDEN_KEY);
+                    safeStorageRemove(KDS_PROGRESS_KEY);
                     window.location.reload();
                   }}
                   className="mt-3 min-h-12 w-full rounded-lg border border-zinc-300 bg-white px-5 font-bold text-zinc-800"
