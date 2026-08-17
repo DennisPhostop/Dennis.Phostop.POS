@@ -5204,7 +5204,429 @@
         );
       }
 
+      function isRiceMealsReportItem(item) {
+        const category = String(item?.category || "");
+        if (category === RICE_MEALS_TIME_CATEGORY) return true;
+        if (category !== "Rice Meals") return false;
+        const code = Number(menuItemCode(item?.name));
+        return code >= 701 && code <= 717;
+      }
+
       function ReportsView({ payments, supplierRecords }) {
+        const [reportMode, setReportMode] = useState("business");
+        return (
+          <div className="flex h-full min-h-0 flex-col overflow-hidden">
+            <div className="screen-only flex flex-wrap items-center justify-between gap-3 border-b border-line bg-ink px-5 py-3">
+              <div>
+                <div className="text-xs font-black uppercase tracking-[.18em] text-zinc-500">Sales Reports</div>
+                <div className="mt-1 text-lg font-black text-white">
+                  {reportMode === "rice-meals" ? "Rice Meals" : "Whole Business"}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-panel p-1">
+                <button
+                  data-testid="report-all-sales"
+                  onClick={() => setReportMode("business")}
+                  className={cx(
+                    "min-h-12 rounded-md px-5 text-sm font-black",
+                    reportMode === "business" ? "bg-orange text-black" : "text-zinc-300"
+                  )}
+                >
+                  All Sales
+                </button>
+                <button
+                  data-testid="report-rice-meals"
+                  onClick={() => setReportMode("rice-meals")}
+                  className={cx(
+                    "min-h-12 rounded-md px-5 text-sm font-black",
+                    reportMode === "rice-meals" ? "bg-orange text-black" : "text-zinc-300"
+                  )}
+                >
+                  Rice Meals Report
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {reportMode === "rice-meals" ? (
+                <RiceMealsReportView payments={payments} />
+              ) : (
+                <BusinessReportsView payments={payments} supplierRecords={supplierRecords} />
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      function RiceMealsReportView({ payments }) {
+        const [range, setRange] = useState("today");
+        const [selectedDate, setSelectedDate] = useState(todayKey());
+        const [selectedMonth, setSelectedMonth] = useState(monthKey());
+
+        const periodPayments = (payments || []).filter((payment) => {
+          if (range === "today") return payment.date === selectedDate;
+          if (range === "month") return (payment.date || "").startsWith(selectedMonth);
+          return true;
+        });
+        const ricePayments = periodPayments.filter((payment) =>
+          (payment.items || []).some(isRiceMealsReportItem)
+        );
+        const activeRicePayments = ricePayments.filter((payment) => !payment.voided);
+        const voidedRicePayments = ricePayments.filter((payment) => payment.voided);
+
+        function riceRowsForPayment(payment) {
+          return (payment.items || []).filter(isRiceMealsReportItem).map((item) => {
+            const gross = lineTotal(item);
+            const baseSales = baseLineTotal(item);
+            const code = menuItemCode(item.name);
+            return {
+              id: `${payment.id}-${item.id || item.menuId || item.name}`,
+              payment,
+              item,
+              code,
+              name: menuItemDisplayName(item.name),
+              qty: Number(item.qty || 0),
+              gross,
+              net: gross,
+              baseSales,
+              addonSales: roundCurrency(Math.max(0, gross - baseSales)),
+              addons: (item.addons || []).map(addonLabel).join(", "),
+            };
+          });
+        }
+
+        const allRiceRows = ricePayments.flatMap(riceRowsForPayment);
+        const paidRiceRows = activeRicePayments.flatMap(riceRowsForPayment);
+        const riceGross = roundCurrency(paidRiceRows.reduce((sum, row) => sum + row.gross, 0));
+        const riceNet = roundCurrency(paidRiceRows.reduce((sum, row) => sum + row.net, 0));
+        const riceQty = paidRiceRows.reduce((sum, row) => sum + row.qty, 0);
+        const riceOrderCount = new Set(paidRiceRows.map((row) => row.payment.id)).size;
+        const averageRiceOrder = riceOrderCount ? riceNet / riceOrderCount : 0;
+
+        const itemStatsMap = {};
+        paidRiceRows.forEach((row) => {
+          const key = row.item.menuId || `${row.code}-${row.name}`;
+          if (!itemStatsMap[key]) {
+            itemStatsMap[key] = { code: row.code, name: row.name, qty: 0, baseSales: 0, addonSales: 0, gross: 0, net: 0 };
+          }
+          itemStatsMap[key].qty += row.qty;
+          itemStatsMap[key].baseSales += row.baseSales;
+          itemStatsMap[key].addonSales += row.addonSales;
+          itemStatsMap[key].gross += row.gross;
+          itemStatsMap[key].net += row.net;
+        });
+        const itemStats = Object.values(itemStatsMap)
+          .map((item) => ({
+            ...item,
+            unitPrice: item.qty ? roundCurrency(item.baseSales / item.qty) : 0,
+            baseSales: roundCurrency(item.baseSales),
+            addonSales: roundCurrency(item.addonSales),
+            gross: roundCurrency(item.gross),
+            net: roundCurrency(item.net),
+          }))
+          .sort((a, b) => Number(a.code || 9999) - Number(b.code || 9999) || b.qty - a.qty);
+
+        const methodStats = PAYMENT_METHODS.map((method) => {
+          const rows = paidRiceRows.filter((row) => row.payment.method === method);
+          return {
+            method,
+            orders: new Set(rows.map((row) => row.payment.id)).size,
+            qty: rows.reduce((sum, row) => sum + row.qty, 0),
+            net: roundCurrency(rows.reduce((sum, row) => sum + row.net, 0)),
+          };
+        });
+
+        const dailyStatsMap = {};
+        paidRiceRows.forEach((row) => {
+          const date = row.payment.date || todayKey(row.payment.paidAt);
+          if (!dailyStatsMap[date]) {
+            dailyStatsMap[date] = { date, paymentIds: new Set(), qty: 0, gross: 0, net: 0 };
+          }
+          const day = dailyStatsMap[date];
+          day.paymentIds.add(row.payment.id);
+          day.qty += row.qty;
+          day.gross += row.gross;
+          day.net += row.net;
+        });
+        const dailyStats = Object.values(dailyStatsMap)
+          .map((day) => ({
+            date: day.date,
+            orders: day.paymentIds.size,
+            qty: day.qty,
+            gross: roundCurrency(day.gross),
+            net: roundCurrency(day.net),
+          }))
+          .sort((a, b) => b.date.localeCompare(a.date));
+
+        function downloadRiceMealsExcel() {
+          downloadExcelFile(`rice-meals-report-${rangeLabel(range, selectedDate, selectedMonth)}`, [
+            {
+              title: "Rice Meals Summary",
+              rows: [
+                ["Period", rangeLabel(range, selectedDate, selectedMonth)],
+                ["Paid Rice Meals Receipts", riceOrderCount],
+                ["Voided Rice Meals Receipts", voidedRicePayments.length],
+                ["Rice Meals Quantity", riceQty],
+                ["Rice Meals Sales", riceNet],
+                ["Average Per Rice Meals Receipt", averageRiceOrder],
+              ],
+            },
+            {
+              title: "Rice Meals Item Sales",
+              rows: [
+                ["Code", "Item", "Unit Price", "Qty Sold", "Add-on Sales", "Sales"],
+                ...itemStats.map((item) => [item.code, item.name, item.unitPrice, item.qty, item.addonSales, item.net]),
+              ],
+            },
+            {
+              title: "Daily Rice Meals Sales",
+              rows: [
+                ["Date", "Receipts", "Qty Sold", "Sales"],
+                ...dailyStats.map((day) => [day.date, day.orders, day.qty, day.net]),
+              ],
+            },
+            {
+              title: "Rice Meals Payment Mix",
+              rows: [
+                ["Method", "Receipts", "Qty Sold", "Sales"],
+                ...methodStats.map((item) => [item.method, item.orders, item.qty, item.net]),
+              ],
+            },
+            {
+              title: "Rice Meals Receipt Item Detail",
+              rows: [
+                ["Paid At", "Order", "Status", "Table", "Method", "Cashier", "Code", "Item", "Qty", "Add-ons", "Note", "Sales"],
+                ...allRiceRows.map((row) => [
+                  `${displayDate(row.payment.paidAt)} ${displayTime(row.payment.paidAt)}`,
+                  row.payment.orderNumber,
+                  row.payment.voided ? "VOIDED" : "PAID",
+                  row.payment.tableId ? `Table ${row.payment.tableId}` : "Takeaway",
+                  row.payment.method,
+                  row.payment.collectedBy || "-",
+                  row.code,
+                  row.name,
+                  row.qty,
+                  row.addons || "-",
+                  row.item.note || "-",
+                  row.net,
+                ]),
+              ],
+            },
+          ]);
+        }
+
+        function printRiceMealsReport() {
+          printReportPage(
+            `Rice Meals Report ${rangeLabel(range, selectedDate, selectedMonth)}`,
+            "sales-printing",
+            [
+              {
+                title: "Rice Meals Summary",
+                rows: [
+                  ["Paid Receipts", riceOrderCount],
+                  ["Voided Receipts", voidedRicePayments.length],
+                  ["Qty Sold", riceQty],
+                  ["Rice Meals Sales", money(riceNet)],
+                ],
+              },
+              {
+                title: "Item Sales",
+                rows: itemStats.length
+                  ? itemStats.map((item) => [`${item.code} ${item.name}`, `x${item.qty}`, money(item.net)])
+                  : [["No Rice Meals sales in this period"]],
+              },
+              {
+                title: "Payment Mix",
+                rows: methodStats.map((item) => [item.method, item.orders, money(item.net)]),
+              },
+            ]
+          );
+        }
+
+        return (
+          <div id="sales-report-print-area" className="h-full overflow-auto p-5">
+            <div className="report-print-title mb-5 hidden border-b border-zinc-300 pb-4">
+              <h1 className="text-2xl font-black">Rice Meals Sales Report</h1>
+              <div className="mt-1 text-sm">Period: {rangeLabel(range, selectedDate, selectedMonth)}</div>
+              <div className="mt-1 text-sm">Generated: {displayDateTime(new Date())}</div>
+            </div>
+
+            <div className="screen-only mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-2xl font-black text-white">Rice Meals Sales</h3>
+                <p className="mt-1 text-sm text-zinc-500">Items 701-717 only. Other menu sales are excluded.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[ ["today", "Today"], ["month", "Month"], ["all", "All Records"] ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setRange(key)}
+                    className={cx(
+                      "min-h-12 rounded-lg border px-4 text-sm font-bold",
+                      range === key ? "border-orange bg-orange text-black" : "border-line bg-panel text-zinc-300"
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+                {range === "today" && (
+                  <input
+                    data-testid="rice-report-date"
+                    type="date"
+                    value={selectedDate}
+                    onChange={(event) => setSelectedDate(event.target.value)}
+                    className="min-h-12 rounded-lg border border-line bg-panel px-3 text-white outline-none focus:border-orange"
+                  />
+                )}
+                {range === "month" && (
+                  <input
+                    data-testid="rice-report-month"
+                    type="month"
+                    value={selectedMonth}
+                    onChange={(event) => setSelectedMonth(event.target.value)}
+                    className="min-h-12 rounded-lg border border-line bg-panel px-3 text-white outline-none focus:border-orange"
+                  />
+                )}
+                <button
+                  onClick={printRiceMealsReport}
+                  className="min-h-12 rounded-lg border border-line bg-panel px-4 text-sm font-bold text-zinc-300"
+                >
+                  Print Report
+                </button>
+                <button
+                  data-testid="download-rice-report"
+                  onClick={downloadRiceMealsExcel}
+                  className="min-h-12 rounded-lg bg-orange px-4 text-sm font-black text-black"
+                >
+                  Download Rice Excel
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+              {[
+                ["Rice Meals Sales", money(riceNet), `${riceOrderCount} paid receipts`],
+                ["Qty Sold", riceQty, "Rice Meals items"],
+                ["Voided", voidedRicePayments.length, "Not included in sales"],
+                ["Listed Sales", money(riceGross), "No discount calculation"],
+                ["Average", money(averageRiceOrder), "Per Rice Meals receipt"],
+              ].map(([title, value, copy]) => (
+                <div key={title} className="rounded-lg border border-line bg-panel p-4">
+                  <div className="text-xs font-black uppercase tracking-[.14em] text-zinc-500">{title}</div>
+                  <div className="mt-3 text-2xl font-black text-orange2">{value}</div>
+                  <div className="mt-2 text-sm text-zinc-400">{copy}</div>
+                </div>
+              ))}
+            </div>
+
+            <section className="mt-5 rounded-lg border border-line bg-panel p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xl font-black">Complete Item Sales</h3>
+                <span className="text-sm text-zinc-500">{itemStats.length} Rice Meals items sold</span>
+              </div>
+              <div className="mt-4 overflow-auto rounded-lg border border-line">
+                <table className="w-full min-w-[900px] text-left text-sm">
+                  <thead className="bg-ink text-zinc-400">
+                    <tr>
+                      <th className="p-3">Code</th>
+                      <th className="p-3">Rice Meal</th>
+                      <th className="p-3 text-right">Unit Price</th>
+                      <th className="p-3 text-right">Qty</th>
+                      <th className="p-3 text-right">Add-ons</th>
+                      <th className="p-3 text-right">Sales</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemStats.map((item) => (
+                      <tr key={`${item.code}-${item.name}`} className="border-t border-line">
+                        <td className="p-3 font-black text-orange2">{item.code || "-"}</td>
+                        <td className="p-3 font-semibold">{item.name}</td>
+                        <td className="p-3 text-right">{money(item.unitPrice)}</td>
+                        <td className="p-3 text-right font-black">{item.qty}</td>
+                        <td className="p-3 text-right">{money(item.addonSales)}</td>
+                        <td className="p-3 text-right font-black text-orange2">{money(item.net)}</td>
+                      </tr>
+                    ))}
+                    {itemStats.length === 0 && (
+                      <tr><td colSpan="6" className="p-8 text-center text-zinc-500">No Rice Meals sales for this period.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
+              <section className="rounded-lg border border-line bg-panel p-5">
+                <h3 className="text-xl font-black">Payment Mix</h3>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  {methodStats.map((item) => (
+                    <div key={item.method} className="rounded-lg border border-line bg-ink p-3">
+                      <div className="font-bold">{item.method}</div>
+                      <div className="mt-2 text-xl font-black text-orange2">{money(item.net)}</div>
+                      <div className="mt-1 text-xs text-zinc-500">{item.orders} receipts / {item.qty} items</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-line bg-panel p-5">
+                <h3 className="text-xl font-black">Daily Rice Meals Sales</h3>
+                <div className="mt-4 max-h-72 overflow-auto rounded-lg border border-line">
+                  <table className="w-full min-w-[560px] text-left text-sm">
+                    <thead className="sticky top-0 bg-ink text-zinc-400">
+                      <tr>
+                        <th className="p-3">Date</th><th className="p-3 text-right">Receipts</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Sales</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dailyStats.map((day) => (
+                        <tr key={day.date} className="border-t border-line">
+                          <td className="p-3">{day.date}</td><td className="p-3 text-right">{day.orders}</td><td className="p-3 text-right">{day.qty}</td><td className="p-3 text-right font-black text-orange2">{money(day.net)}</td>
+                        </tr>
+                      ))}
+                      {dailyStats.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-zinc-500">No daily sales data.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <section className="mt-5 rounded-lg border border-line bg-panel p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xl font-black">Complete Rice Meals Receipt Detail</h3>
+                <span className="text-sm text-zinc-500">{voidedRicePayments.length} voided receipts excluded from sales</span>
+              </div>
+              <div className="mt-4 overflow-auto rounded-lg border border-line">
+                <table className="w-full min-w-[1180px] text-left text-sm">
+                  <thead className="bg-ink text-zinc-400">
+                    <tr>
+                      <th className="p-3">Date / Time</th><th className="p-3">Order</th><th className="p-3">Status</th><th className="p-3">Table</th><th className="p-3">Method</th><th className="p-3">Cashier</th><th className="p-3">Item</th><th className="p-3">Add-ons / Note</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Sales</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allRiceRows.map((row) => (
+                      <tr key={row.id} className={cx("border-t border-line", row.payment.voided && "bg-rose-500/5 text-rose-100")}>
+                        <td className="p-3 text-zinc-400">{displayDate(row.payment.paidAt)} {displayTime(row.payment.paidAt)}</td>
+                        <td className="p-3 font-semibold">{row.payment.orderNumber}</td>
+                        <td className={cx("p-3 font-black", row.payment.voided ? "text-rose-300" : "text-emerald-300")}>{row.payment.voided ? "VOIDED" : "PAID"}</td>
+                        <td className="p-3">{row.payment.tableId ? `Table ${row.payment.tableId}` : "Takeaway"}</td>
+                        <td className="p-3">{row.payment.method}</td>
+                        <td className="p-3">{row.payment.collectedBy || "-"}</td>
+                        <td className="p-3 font-semibold">{row.code ? `${row.code}. ` : ""}{row.name}</td>
+                        <td className="p-3 text-zinc-400">{[row.addons, row.item.note].filter(Boolean).join(" / ") || "-"}</td>
+                        <td className="p-3 text-right font-black">{row.qty}</td>
+                        <td className={cx("p-3 text-right font-black", row.payment.voided ? "text-rose-300 line-through" : "text-orange2")}>{money(row.net)}</td>
+                      </tr>
+                    ))}
+                    {allRiceRows.length === 0 && <tr><td colSpan="10" className="p-8 text-center text-zinc-500">No Rice Meals receipt details for this period.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        );
+      }
+
+      function BusinessReportsView({ payments, supplierRecords }) {
         const [range, setRange] = useState("today");
         const [selectedDate, setSelectedDate] = useState(todayKey());
         const [selectedMonth, setSelectedMonth] = useState(monthKey());
