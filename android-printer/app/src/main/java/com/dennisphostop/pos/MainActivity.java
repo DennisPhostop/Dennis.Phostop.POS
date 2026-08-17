@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothSocket;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -65,7 +66,7 @@ public class MainActivity extends Activity {
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
         settings.setAllowFileAccess(false);
-        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
         printerBridge = new PrinterBridge(this, webView);
         webView.addJavascriptInterface(printerBridge, "AndroidPrinter");
@@ -80,6 +81,24 @@ public class MainActivity extends Activity {
         });
         webView.setWebChromeClient(new WebChromeClient());
         webView.loadUrl(POS_URL);
+        printerBridge.autoConnectLastPrinter();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (printerBridge != null) printerBridge.autoConnectLastPrinter();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == BLUETOOTH_PERMISSION_REQUEST
+                && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED
+                && printerBridge != null) {
+            printerBridge.autoConnectLastPrinter();
+        }
     }
 
     private void requestBluetoothPermissions() {
@@ -118,13 +137,19 @@ public class MainActivity extends Activity {
 
     public static class PrinterBridge {
         private static final UUID SERIAL_PORT_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
+        private static final String PRINTER_PREFS = "printer_preferences";
+        private static final String LAST_PRINTER_ADDRESS = "last_printer_address";
+        private static final String LAST_PRINTER_NAME = "last_printer_name";
         private final Activity activity;
         private final Context context;
         private final WebView webView;
         private final BluetoothAdapter adapter;
+        private final SharedPreferences preferences;
         private BluetoothSocket socket;
         private OutputStream outputStream;
         private String connectedName = "";
+        private String connectedAddress = "";
+        private volatile boolean autoConnecting = false;
 
         PrinterBridge(Activity activity, WebView webView) {
             this.activity = activity;
@@ -132,6 +157,7 @@ public class MainActivity extends Activity {
             this.webView = webView;
             BluetoothManager manager = (BluetoothManager) activity.getSystemService(Context.BLUETOOTH_SERVICE);
             this.adapter = manager == null ? null : manager.getAdapter();
+            this.preferences = activity.getSharedPreferences(PRINTER_PREFS, Context.MODE_PRIVATE);
         }
 
         private boolean hasConnectPermission() {
@@ -204,6 +230,11 @@ public class MainActivity extends Activity {
             try {
                 outputStream = socket.getOutputStream();
                 connectedName = device.getName() == null ? "MRBOSS E2000" : device.getName();
+                connectedAddress = device.getAddress();
+                preferences.edit()
+                        .putString(LAST_PRINTER_ADDRESS, connectedAddress)
+                        .putString(LAST_PRINTER_NAME, connectedName)
+                        .apply();
                 return success("Connected");
             } catch (IOException error) {
                 close();
@@ -212,9 +243,55 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public synchronized String getConnectionStatus() {
+            try {
+                boolean connected = socket != null && socket.isConnected() && outputStream != null;
+                return new JSONObject()
+                        .put("ok", true)
+                        .put("connected", connected)
+                        .put("connecting", autoConnecting)
+                        .put("name", connected ? connectedName : preferences.getString(LAST_PRINTER_NAME, ""))
+                        .put("address", connected ? connectedAddress : "")
+                        .put("rememberedAddress", preferences.getString(LAST_PRINTER_ADDRESS, ""))
+                        .toString();
+            } catch (Exception error) {
+                return failure("Could not read printer connection status.");
+            }
+        }
+
+        synchronized void autoConnectLastPrinter() {
+            if (autoConnecting || (socket != null && socket.isConnected() && outputStream != null)) return;
+            if (adapter == null || !adapter.isEnabled() || !hasConnectPermission()) return;
+            final String address = preferences.getString(LAST_PRINTER_ADDRESS, "");
+            if (address == null || address.trim().isEmpty()) return;
+
+            autoConnecting = true;
+            new Thread(() -> {
+                try {
+                    String result = connect(address);
+                    if (!result.contains("\"ok\":true")) {
+                        try {
+                            Thread.sleep(1200);
+                        } catch (InterruptedException ignored) {
+                            Thread.currentThread().interrupt();
+                        }
+                        connect(address);
+                    }
+                } finally {
+                    autoConnecting = false;
+                }
+            }, "pos-printer-reconnect").start();
+        }
+
+        @JavascriptInterface
         public synchronized String printBase64(String payload) {
             if (socket == null || !socket.isConnected() || outputStream == null) {
-                return failure("Printer is not connected. Open Setup > Printer Setup and connect MRBOSS E2000.");
+                String rememberedAddress = preferences.getString(LAST_PRINTER_ADDRESS, "");
+                if (rememberedAddress == null || rememberedAddress.trim().isEmpty()) {
+                    return failure("Printer is not connected. Open Setup > Printer Setup and connect MRBOSS E2000.");
+                }
+                String reconnectResult = connect(rememberedAddress);
+                if (!reconnectResult.contains("\"ok\":true")) return reconnectResult;
             }
             try {
                 byte[] bytes = Base64.decode(payload, Base64.DEFAULT);
@@ -298,6 +375,10 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public synchronized String disconnect() {
             close();
+            preferences.edit()
+                    .remove(LAST_PRINTER_ADDRESS)
+                    .remove(LAST_PRINTER_NAME)
+                    .apply();
             return success("Disconnected");
         }
 
@@ -313,6 +394,7 @@ public class MainActivity extends Activity {
             outputStream = null;
             socket = null;
             connectedName = "";
+            connectedAddress = "";
         }
     }
 }

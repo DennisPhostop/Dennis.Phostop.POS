@@ -844,6 +844,10 @@
         return Math.max(0, (end - start) / 3600000);
       }
 
+      function liveTimecards(cards) {
+        return (cards || []).filter((card) => !card.deletedAt);
+      }
+
       function formatHours(value) {
         return `${Number(value || 0).toFixed(1)}h`;
       }
@@ -1146,7 +1150,9 @@
               : saved.menuItems?.length ? saved.menuItems : defaultMenu
           )),
           orders: saved.orders || [],
-          kitchenTickets: saved.kitchenTickets || [],
+          kitchenTickets: (saved.kitchenTickets || []).filter(
+            (ticket) => !ticket?.createdAt || kitchenTicketDay(ticket) === todayKey()
+          ),
           payments: saved.payments || [],
           suppliers: saved.suppliers?.length ? saved.suppliers : defaultSuppliers.map((supplier) => ({ ...supplier })),
           supplierRecords: saved.supplierRecords || [],
@@ -1163,6 +1169,7 @@
           "cancelledAt",
           "confirmedAt",
           "archivedAt",
+          "editedAt",
           "updatedAt",
           "sentAt",
           "heldAt",
@@ -1709,6 +1716,11 @@
         return parseAndroidPrinterResult(window.AndroidPrinter.connect(String(address || "")));
       }
 
+      function getAndroidPrinterStatus() {
+        if (!hasAndroidPrinterBridge() || !window.AndroidPrinter?.getConnectionStatus) return null;
+        return parseAndroidPrinterResult(window.AndroidPrinter.getConnectionStatus());
+      }
+
       function printAndroidBytes(bytes) {
         if (!hasAndroidPrinterBridge()) throw new Error("Android printer bridge is not available.");
         return parseAndroidPrinterResult(window.AndroidPrinter.printBase64(bytesToBase64(bytes)));
@@ -1757,6 +1769,9 @@
       }
 
       function loadCloudConfig() {
+        if (["127.0.0.1", "localhost"].includes(window.location.hostname)) {
+          return { ...defaultCloudConfig, enabled: false };
+        }
         const sharedConfig = cloudConfigFromUrl();
         if (sharedConfig) {
           safeStorageSet(CLOUD_CONFIG_KEY, JSON.stringify(sharedConfig));
@@ -1810,6 +1825,139 @@
 
       function cloudStatePath(config) {
         return `restaurants/${sanitizeCloudPath(config.restaurantId)}/posState`;
+      }
+
+      const CLOUD_SCHEMA_VERSION = 2;
+      const CLOUD_ENTITY_COLLECTIONS = [
+        "payments",
+        "timecards",
+        "supplierRecords",
+        "leaveRequests",
+        "orders",
+        "kitchenTickets",
+      ];
+
+      function cloudV2Path(config) {
+        return `restaurants/${sanitizeCloudPath(config.restaurantId)}/posV2`;
+      }
+
+      function entityListToMap(items) {
+        return (items || []).reduce((result, item) => {
+          if (item?.id) result[sanitizeCloudPath(item.id)] = item;
+          return result;
+        }, {});
+      }
+
+      function entityMapToList(value) {
+        if (Array.isArray(value)) return value.filter((item) => item?.id);
+        return Object.values(value || {}).filter((item) => item?.id);
+      }
+
+      function kitchenTicketDay(ticket) {
+        const timestamp = ticket?.createdAt || ticket?.sentAt || ticket?.updatedAt;
+        if (!timestamp) return todayKey();
+        const date = new Date(timestamp);
+        return Number.isNaN(date.getTime()) ? todayKey() : todayKey(date);
+      }
+
+      function cloudMenuItems(items) {
+        return (items || []).map(({ image: unusedImage, ...item }) => item);
+      }
+
+      function restoreCloudMenuImages(items) {
+        return (items || []).map((item) => ({
+          ...item,
+          image: item.image || menuImageFor(item.category, item.name),
+        }));
+      }
+
+      function cloudPayloadFromState(sourceState, deviceId = "") {
+        const current = hydrateState(sourceState);
+        const currentDay = todayKey();
+        return {
+          schemaVersion: CLOUD_SCHEMA_VERSION,
+          deviceId,
+          updatedAt: new Date().toISOString(),
+          config: {
+            menuVersion: current.menuVersion,
+            settingsVersion: current.settingsVersion,
+            staffVersion: current.staffVersion,
+            settings: current.settings,
+            menuCategories: current.menuCategories,
+            staff: current.staff,
+            menuItems: cloudMenuItems(current.menuItems),
+            suppliers: current.suppliers,
+          },
+          payments: entityListToMap(current.payments),
+          timecards: entityListToMap(current.timecards),
+          supplierRecords: entityListToMap(current.supplierRecords),
+          leaveRequests: entityListToMap(current.leaveRequests),
+          orders: entityListToMap(
+            current.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status))
+          ),
+          kitchenTickets: entityListToMap(
+            current.kitchenTickets.filter(
+              (ticket) => !ticket.deletedAt && kitchenTicketDay(ticket) === currentDay
+            )
+          ),
+        };
+      }
+
+      function normalizeCloudPayload(payload) {
+        const normalized = {
+          schemaVersion: Number(payload?.schemaVersion || CLOUD_SCHEMA_VERSION),
+          deviceId: String(payload?.deviceId || ""),
+          updatedAt: payload?.updatedAt || null,
+          config: payload?.config || {},
+        };
+        CLOUD_ENTITY_COLLECTIONS.forEach((collection) => {
+          normalized[collection] = entityListToMap(entityMapToList(payload?.[collection]));
+        });
+        return normalized;
+      }
+
+      function cloudPayloadToState(payload) {
+        const normalized = normalizeCloudPayload(payload);
+        const config = normalized.config || {};
+        return hydrateState({
+          ...emptyState(),
+          ...config,
+          menuItems: restoreCloudMenuImages(config.menuItems || defaultMenu),
+          payments: entityMapToList(normalized.payments),
+          timecards: entityMapToList(normalized.timecards),
+          supplierRecords: entityMapToList(normalized.supplierRecords),
+          leaveRequests: entityMapToList(normalized.leaveRequests),
+          orders: entityMapToList(normalized.orders),
+          kitchenTickets: entityMapToList(normalized.kitchenTickets).filter(
+            (ticket) => kitchenTicketDay(ticket) === todayKey()
+          ),
+        });
+      }
+
+      function cloudPayloadDiff(previousPayload, nextPayload) {
+        const previous = normalizeCloudPayload(previousPayload || {});
+        const next = normalizeCloudPayload(nextPayload || {});
+        const patch = {};
+        if (JSON.stringify(previous.config) !== JSON.stringify(next.config)) {
+          patch.config = next.config;
+        }
+        CLOUD_ENTITY_COLLECTIONS.forEach((collection) => {
+          const previousItems = previous[collection] || {};
+          const nextItems = next[collection] || {};
+          new Set([...Object.keys(previousItems), ...Object.keys(nextItems)]).forEach((id) => {
+            const previousItem = previousItems[id];
+            const nextItem = nextItems[id];
+            if (JSON.stringify(previousItem) !== JSON.stringify(nextItem)) {
+              patch[`${collection}/${id}`] = nextItem || null;
+            }
+          });
+        });
+        if (Object.keys(patch).length) {
+          patch.schemaVersion = CLOUD_SCHEMA_VERSION;
+          patch.deviceId = next.deviceId;
+          patch.updatedAt = next.updatedAt;
+        }
+        return patch;
       }
 
       function firebaseOptions(config) {
@@ -1971,7 +2119,7 @@
         const [message, setMessage] = useState("");
 
         const selectedStaff = staffDirectory.find((staff) => staff.id === staffId) || staffDirectory[0];
-        const activeCard = state.timecards.find(
+        const activeCard = liveTimecards(state.timecards).find(
           (card) => card.staffId === selectedStaff.id && card.date === todayKey() && !card.clockOut
         );
 
@@ -1989,7 +2137,9 @@
           .filter((ticket) => !hiddenKitchenTicketIdSet.has(ticket.id) && !ticket.deletedAt)
           .map((ticket) => applyLocalKitchenProgress(ticket, kitchenTicketProgress[ticket.id]))
           .filter((ticket) => !ticket.archived && ticket.status !== "Served").length;
-        const onDutyCount = state.timecards.filter((card) => card.date === todayKey() && !card.clockOut).length;
+        const onDutyCount = liveTimecards(state.timecards).filter(
+          (card) => card.date === todayKey() && !card.clockOut
+        ).length;
         const availableTableCount = state.tables.filter((table) => table.status === "Available").length;
         const selectedInitials = selectedStaff.name
           .split(" ")
@@ -2034,7 +2184,7 @@
         function clock(type) {
           const now = new Date().toISOString();
           setState((current) => {
-            const openCard = current.timecards.find(
+            const openCard = liveTimecards(current.timecards).find(
               (card) => card.staffId === selectedStaff.id && card.date === todayKey() && !card.clockOut
             );
             if (type === "in" && !openCard) {
@@ -2049,6 +2199,8 @@
                     date: todayKey(),
                     clockIn: now,
                     clockOut: null,
+                    createdAt: now,
+                    updatedAt: now,
                   },
                   ...current.timecards,
                 ],
@@ -2058,7 +2210,7 @@
               return {
                 ...current,
                 timecards: current.timecards.map((card) =>
-                  card.id === openCard.id ? { ...card, clockOut: now } : card
+                  card.id === openCard.id ? { ...card, clockOut: now, updatedAt: now } : card
                 ),
               };
             }
@@ -2350,7 +2502,9 @@
         const activeOrder = openOrders.find((order) => order.id === activeOrderId) || null;
           const selectedOrder = openOrders.find((order) => order.id === selectedOrderId) || activeOrder || null;
         const todayPayments = state.payments.filter((payment) => payment.date === todayKey() && !payment.voided);
-        const onDuty = state.timecards.filter((card) => card.date === todayKey() && !card.clockOut);
+        const onDuty = liveTimecards(state.timecards).filter(
+          (card) => card.date === todayKey() && !card.clockOut
+        );
         const hiddenKitchenTicketIdSet = useMemo(
           () => new Set(hiddenKitchenTicketIds || []),
           [hiddenKitchenTicketIds]
@@ -2918,7 +3072,7 @@
           if (!staff) return;
           const now = new Date().toISOString();
           setState((current) => {
-            const open = current.timecards.find(
+            const open = liveTimecards(current.timecards).find(
               (card) => card.staffId === staff.id && card.date === todayKey() && !card.clockOut
             );
             if (type === "in" && !open) {
@@ -2933,6 +3087,8 @@
                     date: todayKey(),
                     clockIn: now,
                     clockOut: null,
+                    createdAt: now,
+                    updatedAt: now,
                   },
                   ...current.timecards,
                 ],
@@ -2942,7 +3098,7 @@
               return {
                 ...current,
                 timecards: current.timecards.map((card) =>
-                  card.id === open.id ? { ...card, clockOut: now } : card
+                  card.id === open.id ? { ...card, clockOut: now, updatedAt: now } : card
                 ),
               };
             }
@@ -6058,9 +6214,10 @@
         const editingLeave = Boolean(leaveForm.id);
         const selectedStaff = staffDirectory.find((staff) => staff.id === selectedStaffId) || staffDirectory[0];
         const leaveRequests = state.leaveRequests || [];
-        const todayCards = state.timecards.filter((card) => card.date === todayKey());
+        const activeTimecards = liveTimecards(state.timecards);
+        const todayCards = activeTimecards.filter((card) => card.date === todayKey());
         const onDuty = todayCards.filter((card) => !card.clockOut);
-        const monthCards = state.timecards.filter((card) => (card.date || "").startsWith(monthKey()));
+        const monthCards = activeTimecards.filter((card) => (card.date || "").startsWith(monthKey()));
         const todayHours = todayCards.reduce((sum, card) => sum + shiftHours(card), 0);
         const monthHours = monthCards.reduce((sum, card) => sum + shiftHours(card), 0);
         const leaveMonth = leaveDate.slice(0, 7);
@@ -6090,7 +6247,7 @@
           };
         });
         const attendanceMonth = attendanceDate.slice(0, 7);
-        const attendanceCards = state.timecards
+        const attendanceCards = activeTimecards
           .filter((card) => {
             if (attendanceRange === "today") return card.date === attendanceDate;
             if (attendanceRange === "month") return (card.date || "").startsWith(attendanceMonth);
@@ -6150,7 +6307,7 @@
         function clock(type) {
           const now = new Date().toISOString();
           setState((current) => {
-            const open = current.timecards.find(
+            const open = liveTimecards(current.timecards).find(
               (card) => card.staffId === selectedStaff.id && card.date === todayKey() && !card.clockOut
             );
             if (type === "in" && !open) {
@@ -6165,6 +6322,8 @@
                     date: todayKey(),
                     clockIn: now,
                     clockOut: null,
+                    createdAt: now,
+                    updatedAt: now,
                   },
                   ...current.timecards,
                 ],
@@ -6174,7 +6333,7 @@
               return {
                 ...current,
                 timecards: current.timecards.map((card) =>
-                  card.id === open.id ? { ...card, clockOut: now } : card
+                  card.id === open.id ? { ...card, clockOut: now, updatedAt: now } : card
                 ),
               };
             }
@@ -6219,12 +6378,39 @@
                     clockIn: nextClockIn,
                     clockOut: nextClockOut,
                     editedAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
                   }
                 : card
             ),
           }));
           setTimecardForm({ id: "", clockIn: "", clockOut: "" });
           setTimecardMessage("Clock record updated.");
+        }
+
+        function deleteTimecard(card) {
+          const confirmed = window.confirm(
+            `Delete clock record for ${card.staffName} on ${displayDate(card.date)}?`
+          );
+          if (!confirmed) return;
+          const deletedAt = new Date().toISOString();
+          setState((current) => ({
+            ...current,
+            timecards: current.timecards.map((item) =>
+              item.id === card.id
+                ? {
+                    ...item,
+                    deletedAt,
+                    deletedBy: "Manager",
+                    editedAt: deletedAt,
+                    updatedAt: deletedAt,
+                  }
+                : item
+            ),
+          }));
+          if (timecardForm.id === card.id) {
+            setTimecardForm({ id: "", clockIn: "", clockOut: "" });
+          }
+          setTimecardMessage("Clock record deleted.");
         }
 
         function printAttendanceReport() {
@@ -6949,9 +7135,14 @@
                                 </button>
                               </div>
                             ) : (
-                              <button onClick={() => editTimecard(card)} className="min-h-10 rounded-md border border-orange/40 bg-orange/10 px-3 text-xs font-black text-orange2">
-                                Edit Time
-                              </button>
+                              <div className="flex flex-wrap gap-2">
+                                <button onClick={() => editTimecard(card)} className="min-h-10 rounded-md border border-orange/40 bg-orange/10 px-3 text-xs font-black text-orange2">
+                                  Edit Time
+                                </button>
+                                <button onClick={() => deleteTimecard(card)} className="min-h-10 rounded-md border border-rose-400/40 bg-rose-500/10 px-3 text-xs font-black text-rose-200">
+                                  Delete Record
+                                </button>
+                              </div>
                             )}
                           </td>
                           <td className="p-3 text-zinc-400">{displayDate(card.date)}</td>
@@ -7002,7 +7193,7 @@
                 </table>
               </div>
               {timecardMessage && (
-                <div className={cx("mt-3 rounded-md border px-3 py-2 text-sm font-semibold", timecardMessage.includes("updated") ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border-rose-400/30 bg-rose-500/10 text-rose-200")}>
+                <div className={cx("mt-3 rounded-md border px-3 py-2 text-sm font-semibold", /updated|deleted/.test(timecardMessage) ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200" : "border-rose-400/30 bg-rose-500/10 text-rose-200")}>
                   {timecardMessage}
                 </div>
               )}
@@ -7018,7 +7209,6 @@
           name: "",
           category: categories[0],
           price: "",
-          image: "",
           popular: false,
           soldOut: false,
         };
@@ -7083,14 +7273,16 @@
 
         function saveItem() {
           if (!form.name.trim() || !Number(form.price)) return;
+          const existingItem = state.menuItems.find((menuItem) => menuItem.id === form.id);
           const item = {
             ...form,
             id: form.id || uid("menu"),
             name: form.name.trim(),
             price: Number(form.price),
-            image: form.image.trim() || image("photo-1504674900247-0877df9cc836"),
+            image: existingItem?.image || menuImageFor(form.category, form.name.trim()),
             popular: Boolean(form.popular),
             soldOut: Boolean(form.soldOut),
+            updatedAt: new Date().toISOString(),
           };
           setState((current) => ({
             ...current,
@@ -7113,13 +7305,22 @@
           setState((current) => ({
             ...current,
             menuItems: current.menuItems.map((item) =>
-              item.id === id ? { ...item, soldOut: !item.soldOut } : item
+              item.id === id
+                ? { ...item, soldOut: !item.soldOut, updatedAt: new Date().toISOString() }
+                : item
             ),
           }));
         }
 
         function editItem(item) {
-          setForm({ ...item, price: String(item.price) });
+          setForm({
+            id: item.id,
+            name: item.name,
+            category: item.category,
+            price: String(item.price),
+            popular: Boolean(item.popular),
+            soldOut: Boolean(item.soldOut),
+          });
           requestAnimationFrame(() => {
             const scrollContainer = editorRef.current?.parentElement;
             if (scrollContainer) scrollContainer.scrollTop = 0;
@@ -7164,15 +7365,6 @@
                       className="mt-2 min-h-12 w-full rounded-lg border border-line bg-ink px-3 text-white outline-none focus:border-orange"
                     />
                   </div>
-                </div>
-                <div>
-                  <label className="text-sm font-semibold text-zinc-400">Image URL</label>
-                  <input
-                    value={form.image}
-                    onChange={(event) => setForm({ ...form, image: event.target.value })}
-                    placeholder="https://..."
-                    className="mt-2 min-h-12 w-full rounded-lg border border-line bg-ink px-4 text-white outline-none focus:border-orange"
-                  />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <label className="flex min-h-12 items-center gap-3 rounded-lg border border-line bg-ink px-4">
@@ -7276,9 +7468,8 @@
               <h3 className="mt-5 text-xl font-black">Menu Back Office</h3>
               <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
                 {state.menuItems.map((item) => (
-                  <div key={item.id} className="flex gap-4 rounded-lg border border-line bg-ink p-3">
-                    <img src={item.image} alt={item.name} className="h-24 w-24 rounded-md object-cover" />
-                    <div className="min-w-0 flex-1">
+                  <div key={item.id} className="rounded-lg border border-line bg-ink p-3">
+                    <div className="min-w-0">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="font-black">{item.name}</div>
@@ -7359,9 +7550,22 @@
         useEffect(() => {
           if (!hasAndroidPrinterBridge()) return;
           try {
+            const connection = getAndroidPrinterStatus();
             const devices = getAndroidPairedPrinters();
             setAndroidPrinters(devices);
-            if (devices.length) setSelectedAndroidPrinter((current) => current || devices[0].address);
+            const rememberedAddress = connection?.rememberedAddress || connection?.address || "";
+            if (devices.length) {
+              setSelectedAndroidPrinter((current) =>
+                current
+                || devices.find((device) => device.address === rememberedAddress)?.address
+                || devices[0].address
+              );
+            }
+            if (connection?.connected) {
+              setPrinterStatus(`Connected to ${connection.name || "MRBOSS E2000"}. It will reconnect automatically after restarting the POS.`);
+            } else if (rememberedAddress) {
+              setPrinterStatus(`Remembered ${connection?.name || "MRBOSS E2000"}. The POS is reconnecting automatically in the background.`);
+            }
           } catch (error) {
             setPrinterStatus(error?.message || "Could not read paired Android Bluetooth devices.");
           }
@@ -8225,9 +8429,10 @@
         const stateRef = useRef(state);
         const remoteRef = useRef(null);
         const remoteReadyRef = useRef(false);
-        const applyingRemoteRef = useRef(false);
-        const lastRemoteRevisionRef = useRef(0);
+        const lastRemotePayloadRef = useRef(null);
         const pendingRemoteWriteRef = useRef(false);
+        const queuedRemoteWriteRef = useRef(false);
+        const remoteWriteTimerRef = useRef(null);
         const [user, setUser] = useState(() => {
           try {
             return JSON.parse(safeStorageGet(SESSION_KEY));
@@ -8236,45 +8441,42 @@
           }
         });
 
+        async function flushCloudState() {
+          if (!remoteRef.current || !remoteReadyRef.current || !hasCloudConfig(cloudConfig)) return;
+          if (pendingRemoteWriteRef.current) {
+            queuedRemoteWriteRef.current = true;
+            return;
+          }
+
+          const nextPayload = cloudPayloadFromState(stateRef.current, deviceIdRef.current);
+          const patch = cloudPayloadDiff(lastRemotePayloadRef.current, nextPayload);
+          if (!Object.keys(patch).length) return;
+
+          pendingRemoteWriteRef.current = true;
+          queuedRemoteWriteRef.current = false;
+          setSyncStatus({ kind: "syncing", label: "Syncing", message: "Saving changed records" });
+          try {
+            await remoteRef.current.update(patch);
+            setSyncStatus({ kind: "online", label: "Cloud", message: `Synced ${displayTime()}` });
+          } catch (error) {
+            setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud save failed" });
+          } finally {
+            pendingRemoteWriteRef.current = false;
+            if (queuedRemoteWriteRef.current) {
+              queuedRemoteWriteRef.current = false;
+              remoteWriteTimerRef.current = setTimeout(flushCloudState, 80);
+            }
+          }
+        }
+
         useEffect(() => {
           stateRef.current = state;
           safeStorageSet(STORAGE_KEY, JSON.stringify(state));
           document.title = `${state.settings?.businessName || defaultSettings.businessName} | ${state.settings?.tagline || defaultSettings.tagline}`;
 
           if (!remoteRef.current || !remoteReadyRef.current || !hasCloudConfig(cloudConfig)) return;
-          if (applyingRemoteRef.current) {
-            applyingRemoteRef.current = false;
-            return;
-          }
-
-          const revision = Date.now();
-          pendingRemoteWriteRef.current = true;
-          setSyncStatus({ kind: "syncing", label: "Syncing", message: "Saving to cloud" });
-          remoteRef.current
-            .transaction((payload) => {
-              const mergedState = payload?.state ? mergeCloudState(payload.state, state) : state;
-              return {
-                state: mergedState,
-                revision: Math.max(Number(payload?.revision || 0) + 1, revision),
-                deviceId: deviceIdRef.current,
-                updatedAt: new Date().toISOString(),
-              };
-            })
-            .then((result) => {
-              const payload = result?.snapshot?.val?.();
-              if (payload?.state) {
-                lastRemoteRevisionRef.current = Number(payload.revision || revision);
-                const merged = mergeCloudState(payload.state, stateRef.current);
-                applyingRemoteRef.current = true;
-                setState(merged);
-              }
-              pendingRemoteWriteRef.current = false;
-              setSyncStatus({ kind: "online", label: "Cloud", message: `Synced ${displayTime()}` });
-            })
-            .catch((error) => {
-              pendingRemoteWriteRef.current = false;
-              setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud save failed" });
-            });
+          if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
+          remoteWriteTimerRef.current = setTimeout(flushCloudState, 280);
         }, [state]);
 
         useEffect(() => {
@@ -8292,9 +8494,10 @@
         useEffect(() => {
           remoteRef.current = null;
           remoteReadyRef.current = false;
-          applyingRemoteRef.current = false;
           pendingRemoteWriteRef.current = false;
-          lastRemoteRevisionRef.current = 0;
+          queuedRemoteWriteRef.current = false;
+          lastRemotePayloadRef.current = null;
+          if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
 
           if (!cloudConfig.enabled) {
             setSyncStatus({ kind: "local", label: "Local", message: "This device only" });
@@ -8313,6 +8516,7 @@
 
           let cancelled = false;
           let ref = null;
+          let legacyRef = null;
 
           async function connectCloud() {
             try {
@@ -8321,17 +8525,32 @@
               const app =
                 firebase.apps.find((item) => item.name === appName) ||
                 firebase.initializeApp(firebaseOptions(cloudConfig), appName);
-              ref = firebase.database(app).ref(cloudStatePath(cloudConfig));
+              const database = firebase.database(app);
+              ref = database.ref(cloudV2Path(cloudConfig));
+              legacyRef = database.ref(cloudStatePath(cloudConfig));
               remoteRef.current = ref;
 
-              const snapshot = await ref.once("value");
+              const [snapshot, legacySnapshot] = await Promise.all([
+                ref.once("value"),
+                legacyRef.once("value"),
+              ]);
               if (cancelled) return;
               const payload = snapshot.val();
+              const legacyPayload = legacySnapshot.val();
 
-              if (payload?.state) {
-                lastRemoteRevisionRef.current = Number(payload.revision || 0);
-                const merged = mergeCloudState(payload.state, stateRef.current, true);
-                applyingRemoteRef.current = true;
+              if (payload?.schemaVersion) {
+                const normalizedPayload = normalizeCloudPayload(payload);
+                lastRemotePayloadRef.current = normalizedPayload;
+                const v2State = cloudPayloadToState(normalizedPayload);
+                const migratedRemoteState = legacyPayload?.state
+                  ? mergeCloudState(v2State, legacyPayload.state, true)
+                  : v2State;
+                const merged = mergeCloudState(
+                  migratedRemoteState,
+                  stateRef.current,
+                  true
+                );
+                remoteReadyRef.current = true;
                 setState(merged);
                 setSyncStatus({
                   kind: "online",
@@ -8339,30 +8558,37 @@
                   message: `Loaded ${displayTime(payload.updatedAt || new Date())}`,
                 });
               } else {
-                const revision = Date.now();
-                lastRemoteRevisionRef.current = revision;
-                await ref.set({
-                  state: stateRef.current,
-                  revision,
-                  deviceId: deviceIdRef.current,
-                  updatedAt: new Date().toISOString(),
+                const migratedState = legacyPayload?.state
+                  ? mergeCloudState(legacyPayload.state, stateRef.current, true)
+                  : hydrateState(stateRef.current);
+                const migratedPayload = cloudPayloadFromState(migratedState, deviceIdRef.current);
+                await ref.set(migratedPayload);
+                if (cancelled) return;
+                lastRemotePayloadRef.current = normalizeCloudPayload(migratedPayload);
+                remoteReadyRef.current = true;
+                setState(migratedState);
+                setSyncStatus({
+                  kind: "online",
+                  label: "Cloud",
+                  message: legacyPayload?.state ? "Cloud data upgraded" : "Cloud ready",
                 });
-                setSyncStatus({ kind: "online", label: "Cloud", message: "Cloud ready" });
               }
 
-              remoteReadyRef.current = true;
               ref.on(
                 "value",
                 (nextSnapshot) => {
                   if (cancelled) return;
                   const nextPayload = nextSnapshot.val();
-                  if (!nextPayload?.state) return;
-                  const revision = Number(nextPayload.revision || 0);
-                  if (revision <= lastRemoteRevisionRef.current) return;
-                  lastRemoteRevisionRef.current = revision;
-                  if (nextPayload.deviceId === deviceIdRef.current && pendingRemoteWriteRef.current) return;
-                  const merged = mergeCloudState(nextPayload.state, stateRef.current);
-                  applyingRemoteRef.current = true;
+                  if (!nextPayload?.schemaVersion) return;
+                  const normalizedPayload = normalizeCloudPayload(nextPayload);
+                  const remoteConfigChanged = JSON.stringify(lastRemotePayloadRef.current?.config || {})
+                    !== JSON.stringify(normalizedPayload.config || {});
+                  lastRemotePayloadRef.current = normalizedPayload;
+                  const merged = mergeCloudState(
+                    cloudPayloadToState(normalizedPayload),
+                    stateRef.current,
+                    remoteConfigChanged
+                  );
                   setState(merged);
                   setSyncStatus({
                     kind: "online",
@@ -8383,6 +8609,7 @@
 
           return () => {
             cancelled = true;
+            if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
             if (ref) ref.off();
           };
         }, [
