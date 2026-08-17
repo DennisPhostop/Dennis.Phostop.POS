@@ -18,8 +18,9 @@
 
         function repairThisDevice() {
           try {
-            window.localStorage.removeItem("aurora-ipad-pos-state-v1");
             window.localStorage.removeItem("aurora-ipad-pos-session-v1");
+            window.localStorage.removeItem("aurora-ipad-pos-kds-hidden-v1");
+            window.localStorage.removeItem("aurora-ipad-pos-kds-progress-v1");
           } catch (error) {
             // Reload still helps when Safari blocks storage access completely.
           }
@@ -436,14 +437,16 @@
         }
       }
 
-      function confirmDemoReset() {
-        const enteredPin = window.prompt("Enter Reset Demo PIN");
+      function confirmDeviceRepair() {
+        const enteredPin = window.prompt("Enter Device Repair PIN");
         if (enteredPin === null) return false;
         if (enteredPin !== RESET_DEMO_PIN) {
-          window.alert("Incorrect PIN. Demo data was not reset.");
+          window.alert("Incorrect PIN. This device was not changed.");
           return false;
         }
-        return window.confirm("Reset all demo data on connected devices?");
+        return window.confirm(
+          "Repair this device session? Sales, clock records, suppliers, leave and cloud data will be kept."
+        );
       }
 
       const image = (id) =>
@@ -1827,7 +1830,7 @@
         return `restaurants/${sanitizeCloudPath(config.restaurantId)}/posState`;
       }
 
-      const CLOUD_SCHEMA_VERSION = 2;
+      const CLOUD_SCHEMA_VERSION = 3;
       const CLOUD_ENTITY_COLLECTIONS = [
         "payments",
         "timecards",
@@ -2170,15 +2173,13 @@
           onLogin(session);
         }
 
-        function resetDemo() {
-          if (!confirmDemoReset()) return;
-          safeStorageRemove(STORAGE_KEY);
+        function repairDeviceSession() {
+          if (!confirmDeviceRepair()) return;
           safeStorageRemove(SESSION_KEY);
           safeStorageRemove(KDS_HIDDEN_KEY);
           safeStorageRemove(KDS_PROGRESS_KEY);
-          setState(emptyState());
           setPin("");
-          setMessage("Demo data reset. You can start a fresh test now.");
+          setMessage("Device session repaired. Sales and clock records were kept.");
         }
 
         function clock(type) {
@@ -2463,10 +2464,10 @@
                   </div>
 
                   <button
-                    onClick={resetDemo}
+                    onClick={repairDeviceSession}
                     className="mt-4 min-h-11 w-full rounded-lg border border-zinc-200 bg-white px-5 text-sm font-bold text-zinc-500 transition active:scale-[.99]"
                   >
-                    Reset Demo Data
+                    Repair This Device
                   </button>
                   <p className="mt-4 min-h-10 text-sm leading-6 text-zinc-500">{message}</p>
                 </div>
@@ -2540,11 +2541,13 @@
           setUser(null);
         }
 
-        function resetDemo() {
-          if (!confirmDemoReset()) return;
-          safeStorageRemove(STORAGE_KEY);
+        function repairDeviceSession() {
+          if (!confirmDeviceRepair()) return;
           safeStorageRemove(SESSION_KEY);
-          setState(emptyState());
+          safeStorageRemove(KDS_HIDDEN_KEY);
+          safeStorageRemove(KDS_PROGRESS_KEY);
+          setHiddenKitchenTicketIds([]);
+          setKitchenTicketProgress({});
           setActiveOrderId(null);
           setSelectedOrderId(null);
           setReceipt(null);
@@ -3193,10 +3196,10 @@
                   </div>
                   {user.role === "manager" && (
                     <button
-                      onClick={resetDemo}
+                      onClick={repairDeviceSession}
                       className="min-h-14 rounded-lg border border-line bg-panel px-4 text-sm font-bold text-zinc-300"
                     >
-                      Reset Demo
+                      Repair Device
                     </button>
                   )}
                 </div>
@@ -8516,7 +8519,102 @@
 
           let cancelled = false;
           let ref = null;
-          let legacyRef = null;
+          let remoteMergeTimer = null;
+          let preferRemoteConfig = false;
+          const listenerBindings = [];
+
+          function queueRemoteMerge(configChanged = false) {
+            preferRemoteConfig = preferRemoteConfig || configChanged;
+            if (remoteMergeTimer) clearTimeout(remoteMergeTimer);
+            remoteMergeTimer = setTimeout(() => {
+              if (cancelled || !lastRemotePayloadRef.current) return;
+              const merged = mergeCloudState(
+                cloudPayloadToState(lastRemotePayloadRef.current),
+                stateRef.current,
+                preferRemoteConfig
+              );
+              preferRemoteConfig = false;
+              stateRef.current = merged;
+              setState(merged);
+              setSyncStatus({
+                kind: "online",
+                label: "Cloud",
+                message: `Low-data sync ${displayTime()}`,
+              });
+            }, 80);
+          }
+
+          function handleCloudReadError(error) {
+            setSyncStatus({
+              kind: "error",
+              label: "Error",
+              message: error?.message || "Cloud read failed",
+            });
+          }
+
+          function addListener(targetRef, eventName, handler) {
+            targetRef.on(eventName, handler, handleCloudReadError);
+            listenerBindings.push({ targetRef, eventName, handler });
+          }
+
+          function attachGranularListeners(configRef, collectionRefs) {
+            addListener(configRef, "value", (snapshot) => {
+              if (cancelled || !lastRemotePayloadRef.current) return;
+              const nextConfig = snapshot.val() || {};
+              if (JSON.stringify(lastRemotePayloadRef.current.config || {}) === JSON.stringify(nextConfig)) {
+                return;
+              }
+              lastRemotePayloadRef.current = {
+                ...lastRemotePayloadRef.current,
+                config: nextConfig,
+              };
+              queueRemoteMerge(true);
+            });
+
+            Object.entries(collectionRefs).forEach(([collection, collectionRef]) => {
+              const applyEntity = (snapshot, removed = false) => {
+                if (cancelled || !lastRemotePayloadRef.current || !snapshot.key) return;
+                const currentCollection = lastRemotePayloadRef.current[collection] || {};
+                const nextCollection = { ...currentCollection };
+                const nextEntity = removed ? null : snapshot.val();
+                if (JSON.stringify(currentCollection[snapshot.key] || null) === JSON.stringify(nextEntity)) {
+                  return;
+                }
+                if (removed) delete nextCollection[snapshot.key];
+                else nextCollection[snapshot.key] = nextEntity;
+                lastRemotePayloadRef.current = {
+                  ...lastRemotePayloadRef.current,
+                  [collection]: nextCollection,
+                };
+                queueRemoteMerge(false);
+              };
+
+              addListener(collectionRef, "child_added", (snapshot) => applyEntity(snapshot));
+              addListener(collectionRef, "child_changed", (snapshot) => applyEntity(snapshot));
+              addListener(collectionRef, "child_removed", (snapshot) => applyEntity(snapshot, true));
+            });
+          }
+
+          async function readGranularPayload(rootRef) {
+            const schemaSnapshot = await rootRef.child("schemaVersion").once("value");
+            if (!schemaSnapshot.exists()) return null;
+            const configRef = rootRef.child("config");
+            const collectionRefs = Object.fromEntries(
+              CLOUD_ENTITY_COLLECTIONS.map((collection) => [collection, rootRef.child(collection)])
+            );
+            const refs = [configRef, ...CLOUD_ENTITY_COLLECTIONS.map((collection) => collectionRefs[collection])];
+            const snapshots = await Promise.all(refs.map((targetRef) => targetRef.once("value")));
+            const payload = {
+              schemaVersion: Number(schemaSnapshot.val() || CLOUD_SCHEMA_VERSION),
+              deviceId: "",
+              updatedAt: null,
+              config: snapshots[0].val() || {},
+            };
+            CLOUD_ENTITY_COLLECTIONS.forEach((collection, index) => {
+              payload[collection] = snapshots[index + 1].val() || {};
+            });
+            return { payload, configRef, collectionRefs };
+          }
 
           async function connectCloud() {
             try {
@@ -8527,37 +8625,33 @@
                 firebase.initializeApp(firebaseOptions(cloudConfig), appName);
               const database = firebase.database(app);
               ref = database.ref(cloudV2Path(cloudConfig));
-              legacyRef = database.ref(cloudStatePath(cloudConfig));
               remoteRef.current = ref;
-
-              const [snapshot, legacySnapshot] = await Promise.all([
-                ref.once("value"),
-                legacyRef.once("value"),
-              ]);
+              const granular = await readGranularPayload(ref);
               if (cancelled) return;
-              const payload = snapshot.val();
-              const legacyPayload = legacySnapshot.val();
 
-              if (payload?.schemaVersion) {
-                const normalizedPayload = normalizeCloudPayload(payload);
+              if (granular?.payload?.schemaVersion) {
+                const normalizedPayload = normalizeCloudPayload(granular.payload);
                 lastRemotePayloadRef.current = normalizedPayload;
                 const v2State = cloudPayloadToState(normalizedPayload);
-                const migratedRemoteState = legacyPayload?.state
-                  ? mergeCloudState(v2State, legacyPayload.state, true)
-                  : v2State;
                 const merged = mergeCloudState(
-                  migratedRemoteState,
+                  v2State,
                   stateRef.current,
                   true
                 );
                 remoteReadyRef.current = true;
+                stateRef.current = merged;
                 setState(merged);
                 setSyncStatus({
                   kind: "online",
                   label: "Cloud",
-                  message: `Loaded ${displayTime(payload.updatedAt || new Date())}`,
+                  message: `Low-data cloud ${displayTime()}`,
                 });
+                attachGranularListeners(granular.configRef, granular.collectionRefs);
               } else {
+                const legacyRef = database.ref(cloudStatePath(cloudConfig));
+                const legacySnapshot = await legacyRef.once("value");
+                if (cancelled) return;
+                const legacyPayload = legacySnapshot.val();
                 const migratedState = legacyPayload?.state
                   ? mergeCloudState(legacyPayload.state, stateRef.current, true)
                   : hydrateState(stateRef.current);
@@ -8566,40 +8660,19 @@
                 if (cancelled) return;
                 lastRemotePayloadRef.current = normalizeCloudPayload(migratedPayload);
                 remoteReadyRef.current = true;
+                stateRef.current = migratedState;
                 setState(migratedState);
                 setSyncStatus({
                   kind: "online",
                   label: "Cloud",
                   message: legacyPayload?.state ? "Cloud data upgraded" : "Cloud ready",
                 });
+                const configRef = ref.child("config");
+                const collectionRefs = Object.fromEntries(
+                  CLOUD_ENTITY_COLLECTIONS.map((collection) => [collection, ref.child(collection)])
+                );
+                attachGranularListeners(configRef, collectionRefs);
               }
-
-              ref.on(
-                "value",
-                (nextSnapshot) => {
-                  if (cancelled) return;
-                  const nextPayload = nextSnapshot.val();
-                  if (!nextPayload?.schemaVersion) return;
-                  const normalizedPayload = normalizeCloudPayload(nextPayload);
-                  const remoteConfigChanged = JSON.stringify(lastRemotePayloadRef.current?.config || {})
-                    !== JSON.stringify(normalizedPayload.config || {});
-                  lastRemotePayloadRef.current = normalizedPayload;
-                  const merged = mergeCloudState(
-                    cloudPayloadToState(normalizedPayload),
-                    stateRef.current,
-                    remoteConfigChanged
-                  );
-                  setState(merged);
-                  setSyncStatus({
-                    kind: "online",
-                    label: "Cloud",
-                    message: `Updated ${displayTime(nextPayload.updatedAt || new Date())}`,
-                  });
-                },
-                (error) => {
-                  setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud read failed" });
-                }
-              );
             } catch (error) {
               setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud connection failed" });
             }
@@ -8610,7 +8683,10 @@
           return () => {
             cancelled = true;
             if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
-            if (ref) ref.off();
+            if (remoteMergeTimer) clearTimeout(remoteMergeTimer);
+            listenerBindings.forEach(({ targetRef, eventName, handler }) => {
+              targetRef.off(eventName, handler);
+            });
           };
         }, [
           cloudConfig.enabled,
@@ -8682,7 +8758,6 @@
                 </button>
                 <button
                   onClick={() => {
-                    safeStorageRemove(STORAGE_KEY);
                     safeStorageRemove(SESSION_KEY);
                     safeStorageRemove(KDS_HIDDEN_KEY);
                     safeStorageRemove(KDS_PROGRESS_KEY);
