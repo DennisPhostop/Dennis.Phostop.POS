@@ -1003,7 +1003,42 @@
           soldOut: false,
           ...item,
           price: Number(item.price || 0),
+          image: item.image || menuImageFor(item.category, item.name),
         }));
+      }
+
+      function compactLineItem(item) {
+        const { image: unusedImage, ...line } = item || {};
+        if (!Array.isArray(line.addons)) return line;
+        return {
+          ...line,
+          addons: line.addons.map((addon) => {
+            const { image: unusedAddonImage, ...compactAddon } = addon || {};
+            return compactAddon;
+          }),
+        };
+      }
+
+      function compactTransactionEntity(entity) {
+        if (!entity || typeof entity !== "object") return entity;
+        return {
+          ...entity,
+          items: (entity.items || []).map(compactLineItem),
+        };
+      }
+
+      function compactTransactionList(items) {
+        return (items || []).map(compactTransactionEntity);
+      }
+
+      function compactStateForStorage(current) {
+        return {
+          ...current,
+          menuItems: (current.menuItems || []).map(({ image: unusedImage, ...item }) => item),
+          orders: compactTransactionList(current.orders),
+          kitchenTickets: compactTransactionList(current.kitchenTickets),
+          payments: compactTransactionList(current.payments),
+        };
       }
 
       function mergeLavuAddonOptions(items) {
@@ -1152,11 +1187,11 @@
               ? restoreSummerFreshRoll(mergeLavuAddonOptions(saved.menuItems?.length ? saved.menuItems : defaultMenu))
               : saved.menuItems?.length ? saved.menuItems : defaultMenu
           )),
-          orders: saved.orders || [],
-          kitchenTickets: (saved.kitchenTickets || []).filter(
+          orders: compactTransactionList(saved.orders),
+          kitchenTickets: compactTransactionList(saved.kitchenTickets).filter(
             (ticket) => !ticket?.createdAt || kitchenTicketDay(ticket) === todayKey()
           ),
-          payments: saved.payments || [],
+          payments: compactTransactionList(saved.payments),
           suppliers: saved.suppliers?.length ? saved.suppliers : defaultSuppliers.map((supplier) => ({ ...supplier })),
           supplierRecords: saved.supplierRecords || [],
           timecards: saved.timecards || [],
@@ -1830,7 +1865,7 @@
         return `restaurants/${sanitizeCloudPath(config.restaurantId)}/posState`;
       }
 
-      const CLOUD_SCHEMA_VERSION = 3;
+      const CLOUD_SCHEMA_VERSION = 4;
       const CLOUD_ENTITY_COLLECTIONS = [
         "payments",
         "timecards",
@@ -1891,16 +1926,20 @@
             menuItems: cloudMenuItems(current.menuItems),
             suppliers: current.suppliers,
           },
-          payments: entityListToMap(current.payments),
+          payments: entityListToMap(compactTransactionList(current.payments)),
           timecards: entityListToMap(current.timecards),
           supplierRecords: entityListToMap(current.supplierRecords),
           leaveRequests: entityListToMap(current.leaveRequests),
           orders: entityListToMap(
-            current.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status))
+            compactTransactionList(
+              current.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status))
+            )
           ),
           kitchenTickets: entityListToMap(
-            current.kitchenTickets.filter(
-              (ticket) => !ticket.deletedAt && kitchenTicketDay(ticket) === currentDay
+            compactTransactionList(
+              current.kitchenTickets.filter(
+                (ticket) => !ticket.deletedAt && kitchenTicketDay(ticket) === currentDay
+              )
             )
           ),
         };
@@ -2693,7 +2732,6 @@
                       name: menuItem.name,
                       category: menuItem.category,
                       price: Number(menuItem.price),
-                      image: menuItem.image,
                       qty: addQuantity,
                       note: presetNote,
                       addons,
@@ -2791,7 +2829,7 @@
               sentBy: user.name,
               sentById: user.id,
               sentByRole: user.title || user.role,
-              items: (order.items || []).map((item) => ({ ...item })),
+              items: (order.items || []).map(compactLineItem),
               orderSignature,
               status: "New",
               createdAt: now,
@@ -2820,7 +2858,7 @@
             sentBy: user.name,
             sentById: user.id,
             sentByRole: user.title || user.role,
-            items: (payment.items || []).map((item) => ({ ...item })),
+            items: (payment.items || []).map(compactLineItem),
             status: "New",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -2883,7 +2921,7 @@
               date: todayKey(),
               paidAt,
               updatedAt: paidAt,
-              items: (currentOrder.items || []).map((item) => ({ ...item })),
+              items: (currentOrder.items || []).map(compactLineItem),
               ...totals,
             };
             return {
@@ -5066,7 +5104,11 @@
                 <div className="space-y-2">
                   {(selectedOrder?.items || []).map((item) => (
                     <div key={item.id} className="flex items-center gap-3 rounded-lg border border-line bg-ink p-3">
-                      <img src={item.image} alt={item.name} className="h-14 w-14 rounded-md object-cover" />
+                      <img
+                        src={item.image || menuImageFor(item.category, item.name)}
+                        alt={item.name}
+                        className="h-14 w-14 rounded-md object-cover"
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="font-bold">{item.qty}x {item.name}</div>
                         {(item.addons || []).map((addon) => (
@@ -8896,7 +8938,7 @@
 
         useEffect(() => {
           stateRef.current = state;
-          safeStorageSet(STORAGE_KEY, JSON.stringify(state));
+          safeStorageSet(STORAGE_KEY, JSON.stringify(compactStateForStorage(state)));
           document.title = `${state.settings?.businessName || defaultSettings.businessName} | ${state.settings?.tagline || defaultSettings.tagline}`;
 
           if (!remoteRef.current || !remoteReadyRef.current || !hasCloudConfig(cloudConfig)) return;
