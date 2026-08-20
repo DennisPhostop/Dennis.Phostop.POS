@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- Deploy revision: menu-editor-touch-v2 -->
+<!-- Deploy revision: host-and-monitor-stations-v1 -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -334,6 +334,7 @@
       const STORAGE_KEY = "aurora-ipad-pos-state-v1";
       const KDS_HIDDEN_KEY = "aurora-ipad-pos-kds-hidden-v1";
       const KDS_PROGRESS_KEY = "aurora-ipad-pos-kds-progress-v1";
+      const KDS_DAY_KEY = "aurora-ipad-pos-kds-day-v1";
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
@@ -772,6 +773,11 @@
         { id: "staff", label: "Staff", icon: "P", managerOnly: true },
         { id: "menu", label: "Menu", icon: "M", managerOnly: true },
         { id: "settings", label: "Setup", icon: "G", managerOnly: true },
+      ];
+
+      const monitorNavItems = [
+        { id: "kds", label: "KDS", icon: "K", managerOnly: false },
+        { id: "cashier", label: "Payments", icon: "$", managerOnly: false },
       ];
 
       function uid(prefix = "id") {
@@ -1724,6 +1730,11 @@
         return Boolean(window.AndroidPrinter?.getPairedDevices && window.AndroidPrinter?.printBase64);
       }
 
+      function isMainPosHostDevice() {
+        if (new URLSearchParams(window.location.search).get("station") === "monitor") return false;
+        return hasAndroidPrinterBridge() || ["127.0.0.1", "localhost"].includes(window.location.hostname);
+      }
+
       function bytesToBase64(bytes) {
         let binary = "";
         for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -2532,11 +2543,17 @@
         const settings = { ...defaultSettings, ...(state.settings || {}) };
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
         const menuCategories = state.menuCategories?.length ? state.menuCategories : CATEGORIES;
-        const [view, setView] = useState("tables");
+        const mainPosHost = isMainPosHostDevice();
+        const allowedNavItems = mainPosHost
+          ? navItems.filter((item) => user.role === "manager" || !item.managerOnly)
+          : monitorNavItems;
+        const [view, setView] = useState(() => (mainPosHost ? "tables" : "kds"));
         const [selectedTableId, setSelectedTableId] = useState(1);
         const [activeOrderId, setActiveOrderId] = useState(null);
         const [selectedOrderId, setSelectedOrderId] = useState(null);
         const [receipt, setReceipt] = useState(null);
+        const [businessDay, setBusinessDay] = useState(todayKey);
+        const previousBusinessDayRef = useRef(businessDay);
 
         const openOrders = state.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status));
         const activeOrder = openOrders.find((order) => order.id === activeOrderId) || null;
@@ -2552,9 +2569,11 @@
         const visibleKitchenTickets = useMemo(
           () =>
             (state.kitchenTickets || []).filter(
-              (ticket) => !hiddenKitchenTicketIdSet.has(ticket.id)
+              (ticket) =>
+                kitchenTicketDay(ticket) === businessDay &&
+                !hiddenKitchenTicketIdSet.has(ticket.id)
             ).map((ticket) => applyLocalKitchenProgress(ticket, kitchenTicketProgress?.[ticket.id])),
-          [state.kitchenTickets, hiddenKitchenTicketIdSet, kitchenTicketProgress]
+          [state.kitchenTickets, hiddenKitchenTicketIdSet, kitchenTicketProgress, businessDay]
         );
         const syncTone =
           syncStatus.kind === "online"
@@ -2574,6 +2593,25 @@
             setSelectedOrderId(null);
           }
         }, [state.orders, activeOrderId, selectedOrderId, selectedTableId]);
+
+        useEffect(() => {
+          if (!mainPosHost && !monitorNavItems.some((item) => item.id === view)) {
+            setView("kds");
+          }
+        }, [mainPosHost, view]);
+
+        useEffect(() => {
+          const timer = window.setInterval(() => setBusinessDay(todayKey()), 30000);
+          return () => window.clearInterval(timer);
+        }, []);
+
+        useEffect(() => {
+          if (previousBusinessDayRef.current === businessDay) return;
+          previousBusinessDayRef.current = businessDay;
+          safeStorageSet(KDS_DAY_KEY, businessDay);
+          setHiddenKitchenTicketIds([]);
+          setKitchenTicketProgress({});
+        }, [businessDay, setHiddenKitchenTicketIds, setKitchenTicketProgress]);
 
         function logout() {
           safeStorageRemove(SESSION_KEY);
@@ -3151,14 +3189,13 @@
           <div className="flex min-h-screen bg-ink text-white">
             <aside className="flex w-24 shrink-0 flex-col border-r border-line bg-black/30 px-3 py-4 lg:w-28">
               <button
-                onClick={() => setView("tables")}
+                onClick={() => setView(mainPosHost ? "tables" : "kds")}
                 className="mb-5 flex h-16 items-center justify-center overflow-hidden rounded-lg border border-line bg-white p-1"
               >
                 <img src={brandLogoImage} alt="Pho Stop logo" className="h-full w-full object-contain" />
               </button>
               <nav className="flex flex-1 flex-col gap-2">
-                {navItems
-                  .filter((item) => user.role === "manager" || !item.managerOnly)
+                {allowedNavItems
                   .map((item) => (
                     <button
                       key={item.id}
@@ -3192,7 +3229,7 @@
                     {view === "kds" ? "Kitchen Display" : "Restaurant POS"}
                   </div>
                   <h2 className="text-2xl font-semibold tracking-normal">
-                    {settings.businessName} / {navItems.find((item) => item.id === view)?.label || "Tables"}
+                    {settings.businessName} / {allowedNavItems.find((item) => item.id === view)?.label || "KDS"}
                   </h2>
                 </div>
                 <div className="flex items-center gap-3">
@@ -3202,7 +3239,7 @@
                       {user.name} <span className="text-zinc-500">/</span> {user.title || "Manager"}
                     </div>
                   </div>
-                  {user.isStaff && (
+                  {mainPosHost && user.isStaff && (
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={() => clockCurrentUser("in")}
@@ -3232,7 +3269,7 @@
                     <div className="text-xs opacity-75">Sync</div>
                     <div className="text-sm font-black">{syncStatus.label}</div>
                   </div>
-                  {user.role === "manager" && (
+                  {mainPosHost && user.role === "manager" && (
                     <button
                       onClick={repairDeviceSession}
                       className="min-h-14 rounded-lg border border-line bg-panel px-4 text-sm font-bold text-zinc-300"
@@ -3318,6 +3355,7 @@
                     onReceipt={setReceipt}
                     onSendPaidToKitchen={sendPaidOrderToKitchen}
                     onTables={() => setView("tables")}
+                    historyOnly={!mainPosHost}
                   />
                 )}
                 {view === "reports" && (
@@ -3344,7 +3382,7 @@
               </section>
             </main>
 
-            {receipt && <ReceiptModal receipt={receipt} settings={settings} onClose={() => setReceipt(null)} />}
+            {mainPosHost && receipt && <ReceiptModal receipt={receipt} settings={settings} onClose={() => setReceipt(null)} />}
           </div>
         );
       }
@@ -4718,8 +4756,8 @@
         );
       }
 
-      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onSendPaidToKitchen, onTables }) {
-        const [listMode, setListMode] = useState("unpaid");
+      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onSendPaidToKitchen, onTables, historyOnly = false }) {
+        const [listMode, setListMode] = useState(() => (historyOnly ? "paid" : "unpaid"));
         const [historySearch, setHistorySearch] = useState("");
         const [historyDate, setHistoryDate] = useState(todayKey());
         const [selectedPaymentId, setSelectedPaymentId] = useState(null);
@@ -4771,6 +4809,10 @@
             setSelectedPaymentId(null);
           }
         }, [listMode]);
+
+        useEffect(() => {
+          if (historyOnly && listMode !== "paid") setListMode("paid");
+        }, [historyOnly, listMode]);
 
         useEffect(() => {
           if (!selectedOrder?.id) {
@@ -4825,15 +4867,17 @@
           <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(280px,42dvh)_minmax(0,1fr)] gap-3 overflow-hidden p-3 lg:grid-cols-[390px_minmax(0,1fr)] lg:grid-rows-1 lg:gap-4 lg:p-4 2xl:grid-cols-[440px_minmax(0,1fr)]">
             <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-line bg-panel p-3 sm:p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <h3 className="text-xl font-black">Orders</h3>
-                <button
-                  onClick={onTables}
-                  className="min-h-11 rounded-md border border-line bg-ink px-4 text-sm font-bold"
-                >
-                  Tables
-                </button>
+                <h3 className="text-xl font-black">{historyOnly ? "Payment History" : "Orders"}</h3>
+                {!historyOnly && (
+                  <button
+                    onClick={onTables}
+                    className="min-h-11 rounded-md border border-line bg-ink px-4 text-sm font-bold"
+                  >
+                    Tables
+                  </button>
+                )}
               </div>
-              <div className="mb-3 grid shrink-0 grid-cols-2 gap-2 rounded-lg bg-ink p-1">
+              {!historyOnly && <div className="mb-3 grid shrink-0 grid-cols-2 gap-2 rounded-lg bg-ink p-1">
                 <button
                   onClick={() => setListMode("unpaid")}
                   className={cx(
@@ -4859,7 +4903,7 @@
                     return paymentDate === todayKey();
                   }).length})
                 </button>
-              </div>
+              </div>}
 
               {listMode === "paid" && (
                 <div className="mb-3 shrink-0 space-y-2">
@@ -5056,7 +5100,7 @@
                     </div>
                   )}
                 </div>
-                <div className="grid shrink-0 grid-cols-1 gap-3 border-t border-line bg-panel p-3 sm:grid-cols-3 sm:p-4">
+                {!historyOnly && <div className="grid shrink-0 grid-cols-1 gap-3 border-t border-line bg-panel p-3 sm:grid-cols-3 sm:p-4">
                   <button
                     onClick={() => selectedPayment && onReceipt(selectedPayment)}
                     disabled={!selectedPayment}
@@ -5079,7 +5123,7 @@
                   >
                     Void Paid Order
                   </button>
-                </div>
+                </div>}
               </section>
             ) : (
             <section className="min-h-0 overflow-y-auto rounded-lg border border-line bg-panel p-4 sm:p-5">
@@ -8885,8 +8929,14 @@
       function App() {
         const [state, setState] = useState(loadState);
         const [cloudConfig, setCloudConfig] = useState(loadCloudConfig);
-        const [hiddenKitchenTicketIds, setHiddenKitchenTicketIds] = useState(loadHiddenKitchenTicketIds);
-        const [kitchenTicketProgress, setKitchenTicketProgress] = useState(loadKitchenTicketProgress);
+        const currentKdsDay = todayKey();
+        const continuingKdsDay = safeStorageGet(KDS_DAY_KEY) === currentKdsDay;
+        const [hiddenKitchenTicketIds, setHiddenKitchenTicketIds] = useState(() =>
+          continuingKdsDay ? loadHiddenKitchenTicketIds() : []
+        );
+        const [kitchenTicketProgress, setKitchenTicketProgress] = useState(() =>
+          continuingKdsDay ? loadKitchenTicketProgress() : {}
+        );
         const [syncStatus, setSyncStatus] = useState({
           kind: "local",
           label: "Local",
@@ -8949,6 +8999,10 @@
         useEffect(() => {
           safeStorageSet(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfig));
         }, [cloudConfig]);
+
+        useEffect(() => {
+          safeStorageSet(KDS_DAY_KEY, todayKey());
+        }, []);
 
         useEffect(() => {
           safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(hiddenKitchenTicketIds));
