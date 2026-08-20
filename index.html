@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- Deploy revision: host-and-monitor-stations-v1 -->
+<!-- Deploy revision: host-monitor-manager-stations-v2 -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -779,6 +779,12 @@
         { id: "kds", label: "KDS", icon: "K", managerOnly: false },
         { id: "cashier", label: "Payments", icon: "$", managerOnly: false },
       ];
+
+      function isManagerLevelUser(user) {
+        const labels = [user?.role, user?.title, user?.name]
+          .map((value) => String(value || "").trim().toLowerCase());
+        return labels.some((value) => ["manager", "boss", "big boss"].includes(value));
+      }
 
       function uid(prefix = "id") {
         return `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
@@ -1731,8 +1737,13 @@
       }
 
       function isMainPosHostDevice() {
-        if (new URLSearchParams(window.location.search).get("station") === "monitor") return false;
+        const station = new URLSearchParams(window.location.search).get("station");
+        if (["monitor", "manager"].includes(station)) return false;
         return hasAndroidPrinterBridge() || ["127.0.0.1", "localhost"].includes(window.location.hostname);
+      }
+
+      function isManagerConsoleRequested() {
+        return new URLSearchParams(window.location.search).get("station") === "manager";
       }
 
       function bytesToBase64(bytes) {
@@ -2212,7 +2223,7 @@
             setMessage("Wrong PIN. You can edit staff PINs and manager PIN in Setup after manager login.");
             return;
           }
-          const staffIsManager = mode === "staff" && String(user.role || "").toLowerCase() === "manager";
+          const staffIsManager = mode === "staff" && isManagerLevelUser(user);
           const session =
             mode === "manager"
               ? { id: user.id, name: user.name, role: "manager" }
@@ -2543,9 +2554,10 @@
         const settings = { ...defaultSettings, ...(state.settings || {}) };
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
         const menuCategories = state.menuCategories?.length ? state.menuCategories : CATEGORIES;
-        const mainPosHost = isMainPosHostDevice();
+        const managerLevel = isManagerLevelUser(user);
+        const mainPosHost = isMainPosHostDevice() || (isManagerConsoleRequested() && managerLevel);
         const allowedNavItems = mainPosHost
-          ? navItems.filter((item) => user.role === "manager" || !item.managerOnly)
+          ? navItems.filter((item) => managerLevel || !item.managerOnly)
           : monitorNavItems;
         const [view, setView] = useState(() => (mainPosHost ? "tables" : "kds"));
         const [selectedTableId, setSelectedTableId] = useState(1);
@@ -3269,7 +3281,7 @@
                     <div className="text-xs opacity-75">Sync</div>
                     <div className="text-sm font-black">{syncStatus.label}</div>
                   </div>
-                  {mainPosHost && user.role === "manager" && (
+                  {mainPosHost && managerLevel && (
                     <button
                       onClick={repairDeviceSession}
                       className="min-h-14 rounded-lg border border-line bg-panel px-4 text-sm font-bold text-zinc-300"
