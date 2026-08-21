@@ -2555,7 +2555,7 @@
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
         const menuCategories = state.menuCategories?.length ? state.menuCategories : CATEGORIES;
         const managerLevel = isManagerLevelUser(user);
-        const mainPosHost = isMainPosHostDevice() || (isManagerConsoleRequested() && managerLevel);
+        const mainPosHost = isMainPosHostDevice() || managerLevel;
         const allowedNavItems = mainPosHost
           ? navItems.filter((item) => managerLevel || !item.managerOnly)
           : monitorNavItems;
