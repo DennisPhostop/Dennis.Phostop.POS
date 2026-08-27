@@ -2555,9 +2555,14 @@
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
         const menuCategories = state.menuCategories?.length ? state.menuCategories : CATEGORIES;
         const managerLevel = isManagerLevelUser(user);
-        const mainPosHost = isMainPosHostDevice() || managerLevel;
+        const mainPosDevice = isMainPosHostDevice();
+        const mainPosHost = mainPosDevice || managerLevel;
         const allowedNavItems = mainPosHost
-          ? navItems.filter((item) => managerLevel || !item.managerOnly)
+          ? navItems.filter(
+              (item) =>
+                (managerLevel || !item.managerOnly) &&
+                (!mainPosDevice || item.id !== "kds")
+            )
           : monitorNavItems;
         const [view, setView] = useState(() => (mainPosHost ? "tables" : "kds"));
         const [selectedTableId, setSelectedTableId] = useState(1);
@@ -2607,10 +2612,10 @@
         }, [state.orders, activeOrderId, selectedOrderId, selectedTableId]);
 
         useEffect(() => {
-          if (!mainPosHost && !monitorNavItems.some((item) => item.id === view)) {
-            setView("kds");
+          if (!allowedNavItems.some((item) => item.id === view)) {
+            setView(mainPosHost ? "tables" : "kds");
           }
-        }, [mainPosHost, view]);
+        }, [mainPosHost, mainPosDevice, managerLevel, view]);
 
         useEffect(() => {
           const timer = window.setInterval(() => setBusinessDay(todayKey()), 30000);
@@ -2866,7 +2871,7 @@
             kitchenTickets: [ticket, ...current.kitchenTickets],
           }));
           playOrderBell();
-          setView("kds");
+          if (!mainPosDevice) setView("kds");
         }
 
         function updateDiscount(orderId, discountChoice) {
