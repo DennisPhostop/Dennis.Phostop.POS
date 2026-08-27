@@ -2844,59 +2844,6 @@
           }));
         }
 
-        function sendToKitchen(orderId) {
-          const now = new Date().toISOString();
-          const selectedOrder = state.orders.find((item) => item.id === orderId);
-          if (!selectedOrder || ["Paid", "Cancelled"].includes(selectedOrder.status) || (selectedOrder.items || []).length === 0) return;
-          const selectedSignature = orderItemsSignature(selectedOrder.items);
-          const alreadySent = state.kitchenTickets.some(
-            (ticket) =>
-              !ticket.deletedAt &&
-              ticket.orderId === selectedOrder.id &&
-              (ticket.orderSignature || orderItemsSignature(ticket.items || [])) === selectedSignature
-          );
-          if (alreadySent) {
-            window.alert("This exact order is already in Kitchen KDS.");
-            setView("kds");
-            return;
-          }
-          setState((current) => {
-            const order = current.orders.find((item) => item.id === orderId);
-            if (!order || ["Paid", "Cancelled"].includes(order.status) || (order.items || []).length === 0) return current;
-            const orderSignature = orderItemsSignature(order.items);
-            const alreadySent = current.kitchenTickets.some(
-              (ticket) =>
-                !ticket.deletedAt &&
-                ticket.orderId === order.id &&
-                (ticket.orderSignature || orderItemsSignature(ticket.items || [])) === orderSignature
-            );
-            if (alreadySent) return current;
-            const ticket = {
-              id: uid("ticket"),
-              orderId: order.id,
-              orderNumber: order.number,
-              tableId: order.tableId,
-              sentBy: user.name,
-              sentById: user.id,
-              sentByRole: user.title || user.role,
-              items: (order.items || []).map(compactLineItem),
-              orderSignature,
-              status: "New",
-              createdAt: now,
-              updatedAt: now,
-            };
-            return {
-              ...current,
-              orders: current.orders.map((item) =>
-                item.id === orderId ? { ...item, status: "Sent", sentAt: now, updatedAt: now } : item
-              ),
-              kitchenTickets: [ticket, ...current.kitchenTickets],
-            };
-          });
-          playOrderBell();
-          setView("kds");
-        }
-
         function sendPaidOrderToKitchen(payment) {
           if (!payment || payment.voided || (payment.items || []).length === 0) return;
           const ticket = {
@@ -2978,8 +2925,31 @@
             items: (currentOrder.items || []).map(compactLineItem),
             ...totals,
           };
+          const orderSignature = orderItemsSignature(payment.items);
+          const kitchenTicket = {
+            id: uid("ticket"),
+            orderId: payment.orderId,
+            paymentId: payment.id,
+            orderNumber: payment.orderNumber,
+            tableId: payment.tableId,
+            sentBy: user.name,
+            sentById: user.id,
+            sentByRole: user.title || user.role,
+            items: payment.items.map(compactLineItem),
+            orderSignature,
+            status: "New",
+            createdAt: paidAt,
+            updatedAt: paidAt,
+            automaticAfterPayment: true,
+          };
 
           setState((current) => {
+            const alreadyInKitchen = (current.kitchenTickets || []).some(
+              (ticket) =>
+                !ticket.deletedAt &&
+                ticket.orderId === payment.orderId &&
+                (ticket.orderSignature || orderItemsSignature(ticket.items || [])) === orderSignature
+            );
             return {
               ...current,
               payments: [payment, ...(current.payments || [])],
@@ -2991,8 +2961,12 @@
               tables: current.tables.map((table) =>
                 table.id === currentOrder.tableId ? { ...table, status: "Cleaning", orderId: null } : table
               ),
+              kitchenTickets: alreadyInKitchen
+                ? current.kitchenTickets
+                : [kitchenTicket, ...(current.kitchenTickets || [])],
             };
           });
+          playOrderBell();
           setReceipt({ ...payment, receiptOpenedAt: Date.now() });
           setView("cashier");
           setSelectedOrderId(null);
@@ -3337,7 +3311,6 @@
                     onDelete={(lineId) => activeOrder && deleteLine(activeOrder.id, lineId)}
                     onDiscount={(discount) => activeOrder && updateDiscount(activeOrder.id, discount)}
                     onHold={() => activeOrder && holdOrder(activeOrder.id)}
-                    onSend={() => activeOrder && sendToKitchen(activeOrder.id)}
                     onPay={() => {
                       if (activeOrder) {
                         setSelectedOrderId(activeOrder.id);
@@ -3464,7 +3437,6 @@
         onDelete,
         onDiscount,
         onHold,
-        onSend,
         onPay,
         onNewTakeaway,
         onTables,
@@ -3733,7 +3705,6 @@
               onDelete={onDelete}
               onDiscount={onDiscount}
               onHold={onHold}
-              onSend={onSend}
               onPay={onPay}
             />
 
@@ -4030,7 +4001,7 @@
         );
       }
 
-      function OrderPanel({ order, totals, onQty, onNote, onAddonQty, onDelete, onDiscount, onHold, onSend, onPay }) {
+      function OrderPanel({ order, totals, onQty, onNote, onAddonQty, onDelete, onDiscount, onHold, onPay }) {
         const [voucherAmount, setVoucherAmount] = useState("");
 
         useEffect(() => {
@@ -4257,7 +4228,7 @@
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="mt-4 grid grid-cols-[minmax(0,.75fr)_minmax(0,1.25fr)] gap-2">
                 <button
                   onClick={onHold}
                   disabled={!order}
@@ -4266,18 +4237,10 @@
                   Hold Order
                 </button>
                 <button
-                  onClick={onSend}
-                  data-testid="send-to-kitchen"
-                  disabled={!order || (order.items || []).length === 0}
-                  className="min-h-14 rounded-lg border border-cyan-200 bg-cyan-400 font-black text-zinc-950 shadow-[0_0_22px_rgba(34,211,238,0.38)] transition active:scale-[.98] disabled:shadow-none disabled:opacity-40"
-                >
-                  Send to Kitchen
-                </button>
-                <button
                   onClick={onPay}
                   data-testid="pay-now"
                   disabled={!order || (order.items || []).length === 0}
-                  className="col-span-2 min-h-16 rounded-lg bg-orange text-lg font-black text-black disabled:opacity-40"
+                  className="min-h-16 rounded-lg bg-orange text-lg font-black text-black disabled:opacity-40"
                 >
                   Pay Now
                 </button>
@@ -5278,7 +5241,7 @@
                   )}
 
                   <div className="mt-4 rounded-lg border border-orange/30 bg-orange/10 p-3 text-sm text-orange2">
-                    Payment success will open a receipt. Press Print Receipt to send it to your receipt printer.
+                    Payment success will automatically send this order to Kitchen KDS and open the receipt.
                   </div>
 
                   <button
