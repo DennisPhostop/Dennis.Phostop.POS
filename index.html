@@ -1,3 +1,4 @@
+
 <!doctype html>
 <!-- Deploy revision: host-monitor-manager-stations-v2 -->
 <html lang="en">
@@ -5699,6 +5700,8 @@
         const [range, setRange] = useState("today");
         const [selectedDate, setSelectedDate] = useState(todayKey());
         const [selectedMonth, setSelectedMonth] = useState(monthKey());
+        const [reportCategory, setReportCategory] = useState("monthly");
+        const [menuCategory, setMenuCategory] = useState("all");
 
         const periodPayments = payments.filter((payment) => {
           if (range === "today") return payment.date === selectedDate;
@@ -5739,19 +5742,68 @@
         const itemStats = {};
         filteredPayments.forEach((payment) => {
           (payment.items || []).forEach((item) => {
-            if (!itemStats[item.name]) itemStats[item.name] = { name: item.name, qty: 0, sales: 0 };
-            itemStats[item.name].qty += Number(item.qty || 0);
-            itemStats[item.name].sales += Number(item.price || 0) * Number(item.qty || 0);
+            const category = item.category || "Other Menu";
+            const itemKey = `${category}::${item.name}`;
+            if (!itemStats[itemKey]) itemStats[itemKey] = { name: item.name, category, qty: 0, sales: 0 };
+            itemStats[itemKey].qty += Number(item.qty || 0);
+            itemStats[itemKey].sales += Number(item.price || 0) * Number(item.qty || 0);
             (item.addons || []).forEach((addon) => {
-              if (!itemStats[addon.name]) itemStats[addon.name] = { name: addon.name, qty: 0, sales: 0 };
-              itemStats[addon.name].qty += addonQuantity(addon) * Number(item.qty || 0);
-              itemStats[addon.name].sales += addonLineTotal(addon, item.qty);
+              const addonKey = `Add-ons::${addon.name}`;
+              if (!itemStats[addonKey]) itemStats[addonKey] = { name: addon.name, category: "Add-ons", qty: 0, sales: 0 };
+              itemStats[addonKey].qty += addonQuantity(addon) * Number(item.qty || 0);
+              itemStats[addonKey].sales += addonLineTotal(addon, item.qty);
             });
           });
         });
         const hotItems = Object.values(itemStats)
           .sort((a, b) => b.qty - a.qty)
           .slice(0, 6);
+
+        const monthlySalesMap = {};
+        payments.filter((payment) => !payment.voided).forEach((payment) => {
+          const month = String(payment.date || todayKey(payment.paidAt)).slice(0, 7);
+          if (!month) return;
+          if (!monthlySalesMap[month]) {
+            monthlySalesMap[month] = { month, orders: 0, qty: 0, sales: 0, itemStats: {} };
+          }
+          const monthRow = monthlySalesMap[month];
+          monthRow.orders += 1;
+          monthRow.sales += Number(payment.total || 0);
+          (payment.items || []).forEach((item) => {
+            const qty = Number(item.qty || 0);
+            const category = item.category || "Other Menu";
+            const itemKey = `${category}::${item.name}`;
+            monthRow.qty += qty;
+            if (!monthRow.itemStats[itemKey]) {
+              monthRow.itemStats[itemKey] = { name: item.name, category, qty: 0, sales: 0 };
+            }
+            monthRow.itemStats[itemKey].qty += qty;
+            monthRow.itemStats[itemKey].sales += lineTotal(item);
+          });
+        });
+        const monthlySalesRows = Object.values(monthlySalesMap)
+          .map((month) => ({ ...month, sales: roundCurrency(month.sales) }))
+          .sort((a, b) => b.month.localeCompare(a.month));
+        const selectedMonthlySales = monthlySalesMap[selectedMonth] || {
+          month: selectedMonth,
+          orders: 0,
+          qty: 0,
+          sales: 0,
+          itemStats: {},
+        };
+        const selectedMonthlyItems = Object.values(selectedMonthlySales.itemStats)
+          .map((item) => ({ ...item, sales: roundCurrency(item.sales) }))
+          .sort((a, b) => b.qty - a.qty || b.sales - a.sales);
+        const menuCategories = [...new Set([
+          ...Object.values(itemStats).map((item) => item.category),
+          ...selectedMonthlyItems.map((item) => item.category),
+        ])].filter(Boolean).sort();
+        const visibleMonthlyItems = selectedMonthlyItems.filter(
+          (item) => menuCategory === "all" || item.category === menuCategory
+        );
+        const visiblePeriodItems = Object.values(itemStats)
+          .filter((item) => menuCategory === "all" || item.category === menuCategory)
+          .sort((a, b) => a.category.localeCompare(b.category) || b.qty - a.qty || b.sales - a.sales);
 
         const dailyMap = {};
         filteredPayments.forEach((payment) => {
@@ -5953,7 +6005,138 @@
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+            <div className="screen-only mb-5 rounded-xl border border-line bg-panel p-3">
+              <div className="mb-3 px-1 text-xs font-black uppercase tracking-[.18em] text-zinc-500">Report Categories</div>
+              <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                {[
+                  ["monthly", "Monthly Quantity", "Compare every month"],
+                  ["overview", "Business Overview", "Sales and profit"],
+                  ["items", "Item Quantity", "What sold most"],
+                  ["receipts", "Receipt Records", "Individual payments"],
+                ].map(([key, label, copy]) => (
+                  <button
+                    key={key}
+                    data-testid={`sales-category-${key}`}
+                    onClick={() => setReportCategory(key)}
+                    className={cx(
+                      "min-h-16 rounded-lg border px-4 py-3 text-left",
+                      reportCategory === key
+                        ? "border-orange bg-orange text-black"
+                        : "border-line bg-ink text-white"
+                    )}
+                  >
+                    <div className="text-base font-black">{label}</div>
+                    <div className={cx("mt-1 text-xs", reportCategory === key ? "text-black/70" : "text-zinc-500")}>{copy}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {reportCategory === "monthly" && (
+              <div data-testid="monthly-quantity-report" className="space-y-5">
+                <section className="rounded-xl border border-orange/40 bg-panel p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-black uppercase tracking-[.18em] text-orange2">Monthly Quantity</div>
+                      <h3 className="mt-1 text-2xl font-black">Monthly Sales Comparison</h3>
+                    </div>
+                    <input
+                      data-testid="monthly-quantity-month"
+                      type="month"
+                      value={selectedMonth}
+                      onChange={(event) => setSelectedMonth(event.target.value)}
+                      className="min-h-12 rounded-lg border border-orange/50 bg-ink px-4 text-lg font-black text-white outline-none focus:border-orange"
+                    />
+                  </div>
+                  <div className="mt-5 grid grid-cols-3 gap-3">
+                    {[
+                      ["Orders", selectedMonthlySales.orders],
+                      ["Items Sold", selectedMonthlySales.qty],
+                      ["Sales", money(selectedMonthlySales.sales)],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-lg border border-line bg-ink p-4 text-center">
+                        <div className="text-xs font-bold uppercase tracking-wider text-zinc-500">{label}</div>
+                        <div className="mt-2 text-2xl font-black text-orange2 md:text-3xl">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-5 border-t border-line pt-4">
+                    <div className="mb-3 text-xs font-black uppercase tracking-[.16em] text-zinc-500">Menu Categories</div>
+                    <div className="flex flex-wrap gap-2">
+                      {["all", ...menuCategories].map((category) => (
+                        <button
+                          key={category}
+                          onClick={() => setMenuCategory(category)}
+                          className={cx(
+                            "min-h-11 rounded-lg border px-4 text-sm font-black",
+                            menuCategory === category
+                              ? "border-emerald-400 bg-emerald-400 text-black"
+                              : "border-line bg-ink text-zinc-300"
+                          )}
+                        >
+                          {category === "all" ? "All Menu" : category}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+
+                <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+                  <section className="rounded-xl border border-line bg-panel p-5">
+                    <h3 className="text-xl font-black">Every Month</h3>
+                    <div className="mt-4 overflow-auto rounded-lg border border-line">
+                      <table className="w-full min-w-[520px] text-left text-sm">
+                        <thead className="sticky top-0 bg-ink text-zinc-400">
+                          <tr><th className="p-3">Month</th><th className="p-3 text-right">Orders</th><th className="p-3 text-right">Items</th><th className="p-3 text-right">Sales</th></tr>
+                        </thead>
+                        <tbody>
+                          {monthlySalesRows.map((month) => (
+                            <tr
+                              key={month.month}
+                              onClick={() => setSelectedMonth(month.month)}
+                              className={cx("cursor-pointer border-t border-line", selectedMonth === month.month && "bg-orange/10")}
+                            >
+                              <td className="p-3 font-black text-orange2">{month.month}</td>
+                              <td className="p-3 text-right">{month.orders}</td>
+                              <td className="p-3 text-right text-lg font-black">{month.qty}</td>
+                              <td className="p-3 text-right font-black">{money(month.sales)}</td>
+                            </tr>
+                          ))}
+                          {monthlySalesRows.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-zinc-500">No monthly sales data yet.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border border-line bg-panel p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-xl font-black">Items in {selectedMonth}</h3>
+                      <span className="text-sm text-zinc-500">{selectedMonthlySales.qty} items</span>
+                    </div>
+                    <div className="mt-4 max-h-[420px] overflow-auto rounded-lg border border-line">
+                      <table className="w-full min-w-[580px] text-left text-sm">
+                        <thead className="sticky top-0 bg-ink text-zinc-400">
+                          <tr><th className="p-3">Category</th><th className="p-3">Menu</th><th className="p-3 text-right">Quantity</th><th className="p-3 text-right">Sales</th></tr>
+                        </thead>
+                        <tbody>
+                          {visibleMonthlyItems.map((item) => (
+                            <tr key={`${item.category}-${item.name}`} className="border-t border-line">
+                              <td className="p-3 text-zinc-400">{item.category}</td>
+                              <td className="p-3 font-semibold">{item.name}</td>
+                              <td className="p-3 text-right text-lg font-black text-emerald-300">{item.qty}</td>
+                              <td className="p-3 text-right font-black text-orange2">{money(item.sales)}</td>
+                            </tr>
+                          ))}
+                          {visibleMonthlyItems.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-zinc-500">No menu sales in this category for this month.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            )}
+
+            {reportCategory === "overview" && <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
               {[
                 ["Today Sales", money(todayReport.total), `${todayReport.orders} orders today`],
                 ["Month Sales", money(monthReport.total), `${monthReport.orders} orders this month`],
@@ -5980,9 +6163,9 @@
                   <div className="mt-2 text-sm text-zinc-400">{copy}</div>
                 </div>
               ))}
-            </div>
+            </div>}
 
-            <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[420px_1fr]">
+            {reportCategory === "overview" && <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[420px_1fr]">
               <section className="rounded-lg border border-line bg-panel p-5">
                 <h3 className="text-xl font-black">Income Breakdown</h3>
                 <div className="mt-5 space-y-3">
@@ -6058,9 +6241,9 @@
                   )}
                 </div>
               </section>
-            </div>
+            </div>}
 
-            <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
+            {reportCategory === "overview" && <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
               <section className="rounded-lg border border-line bg-panel p-5">
                 <h3 className="text-xl font-black">Payment Mix</h3>
                 <div className="mt-5 space-y-4">
@@ -6107,9 +6290,48 @@
                   )}
                 </div>
               </section>
-            </div>
+            </div>}
 
-            <section className="mt-5 rounded-lg border border-line bg-panel p-5">
+            {reportCategory === "items" && (
+              <section data-testid="item-quantity-report" className="rounded-xl border border-line bg-panel p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-black uppercase tracking-[.18em] text-emerald-300">Item Quantity</div>
+                    <h3 className="mt-1 text-2xl font-black">All Items for Selected Period</h3>
+                  </div>
+                  <span className="rounded-lg border border-line bg-ink px-4 py-2 text-sm text-zinc-400">{Object.values(itemStats).reduce((sum, item) => sum + item.qty, 0)} items sold</span>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {["all", ...menuCategories].map((category) => (
+                    <button
+                      key={category}
+                      onClick={() => setMenuCategory(category)}
+                      className={cx(
+                        "min-h-11 rounded-lg border px-4 text-sm font-black",
+                        menuCategory === category
+                          ? "border-emerald-400 bg-emerald-400 text-black"
+                          : "border-line bg-ink text-zinc-300"
+                      )}
+                    >
+                      {category === "all" ? "All Menu" : category}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 overflow-auto rounded-lg border border-line">
+                  <table className="w-full min-w-[680px] text-left text-sm">
+                    <thead className="bg-ink text-zinc-400"><tr><th className="p-3">Category</th><th className="p-3">Menu</th><th className="p-3 text-right">Quantity</th><th className="p-3 text-right">Sales</th></tr></thead>
+                    <tbody>
+                      {visiblePeriodItems.map((item) => (
+                        <tr key={`${item.category}-${item.name}`} className="border-t border-line"><td className="p-3 text-zinc-400">{item.category}</td><td className="p-3 font-semibold">{item.name}</td><td className="p-3 text-right text-lg font-black text-emerald-300">{item.qty}</td><td className="p-3 text-right font-black text-orange2">{money(item.sales)}</td></tr>
+                      ))}
+                      {visiblePeriodItems.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-zinc-500">No menu sales in this category for this period.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
+            {reportCategory === "receipts" && <section className="rounded-lg border border-line bg-panel p-5">
               <h3 className="text-xl font-black">Receipt Records</h3>
               <div className="mt-4 overflow-auto rounded-lg border border-line">
                 <table className="w-full min-w-[900px] text-left text-sm">
@@ -6163,7 +6385,7 @@
                   </tbody>
                 </table>
               </div>
-            </section>
+            </section>}
           </div>
         );
       }
