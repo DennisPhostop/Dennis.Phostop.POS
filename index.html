@@ -339,6 +339,7 @@
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
+      const CLOUD_LAST_SYNC_KEY = "aurora-ipad-pos-cloud-last-sync-v1";
       const RESET_DEMO_PIN = "8888";
       const LAVU_ADDON_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
       const PREVIOUS_MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
@@ -1884,6 +1885,13 @@
         );
       }
 
+      function cloudSyncSince(overlapMs = 5 * 60 * 1000) {
+        const saved = safeStorageGet(CLOUD_LAST_SYNC_KEY);
+        const timestamp = new Date(saved || 0).getTime();
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+        return new Date(Math.max(0, timestamp - overlapMs)).toISOString();
+      }
+
       function cloudStatePath(config) {
         return `restaurants/${sanitizeCloudPath(config.restaurantId)}/posState`;
       }
@@ -1932,9 +1940,22 @@
         }));
       }
 
-      function cloudPayloadFromState(sourceState, deviceId = "") {
-        const current = hydrateState(sourceState);
+      function cloudPayloadFromState(sourceState, deviceId = "", cache = null) {
+        // App state is already hydrated. Re-hydrating here cloned every historical
+        // payment on each save and became progressively slower as sales grew.
+        const current = sourceState || emptyState();
         const currentDay = todayKey();
+        const cachedCollection = (key, source, create) => {
+          if (cache?.refs?.[key] === source && cache?.values?.[key]) return cache.values[key];
+          const value = create();
+          if (cache) {
+            cache.refs = cache.refs || {};
+            cache.values = cache.values || {};
+            cache.refs[key] = source;
+            cache.values[key] = value;
+          }
+          return value;
+        };
         return {
           schemaVersion: CLOUD_SCHEMA_VERSION,
           deviceId,
@@ -1949,21 +1970,23 @@
             menuItems: cloudMenuItems(current.menuItems),
             suppliers: current.suppliers,
           },
-          payments: entityListToMap(compactTransactionList(current.payments)),
-          timecards: entityListToMap(current.timecards),
-          supplierRecords: entityListToMap(current.supplierRecords),
-          leaveRequests: entityListToMap(current.leaveRequests),
-          orders: entityListToMap(
-            compactTransactionList(
-              current.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status))
-            )
+          payments: cachedCollection("payments", current.payments, () =>
+            entityListToMap(compactTransactionList(current.payments))
           ),
-          kitchenTickets: entityListToMap(
-            compactTransactionList(
+          timecards: cachedCollection("timecards", current.timecards, () => entityListToMap(current.timecards)),
+          supplierRecords: cachedCollection("supplierRecords", current.supplierRecords, () => entityListToMap(current.supplierRecords)),
+          leaveRequests: cachedCollection("leaveRequests", current.leaveRequests, () => entityListToMap(current.leaveRequests)),
+          orders: cachedCollection("orders", current.orders, () =>
+            entityListToMap(compactTransactionList(
+              current.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status))
+            ))
+          ),
+          kitchenTickets: cachedCollection("kitchenTickets", current.kitchenTickets, () =>
+            entityListToMap(compactTransactionList(
               current.kitchenTickets.filter(
                 (ticket) => !ticket.deletedAt && kitchenTicketDay(ticket) === currentDay
               )
-            )
+            ))
           ),
         };
       }
@@ -9155,6 +9178,9 @@
         const pendingRemoteWriteRef = useRef(false);
         const queuedRemoteWriteRef = useRef(false);
         const remoteWriteTimerRef = useRef(null);
+        const localStorageTimerRef = useRef(null);
+        const cloudPayloadCacheRef = useRef({ refs: {}, values: {} });
+        const lastCloudRelevantRefsRef = useRef(null);
         const [user, setUser] = useState(() => {
           try {
             return JSON.parse(safeStorageGet(SESSION_KEY));
@@ -9170,8 +9196,33 @@
             return;
           }
 
-          const nextPayload = cloudPayloadFromState(stateRef.current, deviceIdRef.current);
+          const current = stateRef.current;
+          const relevantRefs = [
+            current.settings,
+            current.menuCategories,
+            current.staff,
+            current.menuItems,
+            current.suppliers,
+            current.payments,
+            current.timecards,
+            current.supplierRecords,
+            current.leaveRequests,
+            current.orders,
+            current.kitchenTickets,
+            current.menuVersion,
+            current.settingsVersion,
+            current.staffVersion,
+          ];
+          const previousRefs = lastCloudRelevantRefsRef.current;
+          if (previousRefs && relevantRefs.every((value, index) => Object.is(value, previousRefs[index]))) return;
+
+          const nextPayload = cloudPayloadFromState(
+            current,
+            deviceIdRef.current,
+            cloudPayloadCacheRef.current
+          );
           const patch = cloudPayloadDiff(lastRemotePayloadRef.current, nextPayload);
+          lastCloudRelevantRefsRef.current = relevantRefs;
           if (!Object.keys(patch).length) return;
 
           pendingRemoteWriteRef.current = true;
@@ -9179,6 +9230,8 @@
           setSyncStatus({ kind: "syncing", label: "Syncing", message: "Saving changed records" });
           try {
             await remoteRef.current.update(patch);
+            lastRemotePayloadRef.current = normalizeCloudPayload(nextPayload);
+            safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
             setSyncStatus({ kind: "online", label: "Cloud", message: `Synced ${displayTime()}` });
           } catch (error) {
             setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud save failed" });
@@ -9193,12 +9246,15 @@
 
         useEffect(() => {
           stateRef.current = state;
-          safeStorageSet(STORAGE_KEY, JSON.stringify(compactStateForStorage(state)));
+          if (localStorageTimerRef.current) clearTimeout(localStorageTimerRef.current);
+          localStorageTimerRef.current = setTimeout(() => {
+            safeStorageSet(STORAGE_KEY, JSON.stringify(compactStateForStorage(stateRef.current)));
+          }, 80);
           document.title = `${state.settings?.businessName || defaultSettings.businessName} | ${state.settings?.tagline || defaultSettings.tagline}`;
 
           if (!remoteRef.current || !remoteReadyRef.current || !hasCloudConfig(cloudConfig)) return;
           if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
-          remoteWriteTimerRef.current = setTimeout(flushCloudState, 280);
+          remoteWriteTimerRef.current = setTimeout(flushCloudState, 500);
         }, [state]);
 
         useEffect(() => {
@@ -9223,6 +9279,8 @@
           pendingRemoteWriteRef.current = false;
           queuedRemoteWriteRef.current = false;
           lastRemotePayloadRef.current = null;
+          lastCloudRelevantRefsRef.current = null;
+          cloudPayloadCacheRef.current = { refs: {}, values: {} };
           if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
 
           if (!cloudConfig.enabled) {
@@ -9259,6 +9317,7 @@
               preferRemoteConfig = false;
               stateRef.current = merged;
               setState(merged);
+              safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
               setSyncStatus({
                 kind: "online",
                 label: "Cloud",
@@ -9312,8 +9371,12 @@
                 queueRemoteMerge(false);
               };
 
-              addListener(collectionRef, "child_added", (snapshot) => applyEntity(snapshot));
-              addListener(collectionRef, "child_changed", (snapshot) => applyEntity(snapshot));
+              // A full child_added listener replays every historical sale whenever
+              // the POS starts. Listen only to recent/upcoming changes instead.
+              const liveSince = cloudSyncSince() || new Date(Date.now() - 5 * 60 * 1000).toISOString();
+              const liveQuery = collectionRef.orderByChild("updatedAt").startAt(liveSince);
+              addListener(liveQuery, "child_added", (snapshot) => applyEntity(snapshot));
+              addListener(liveQuery, "child_changed", (snapshot) => applyEntity(snapshot));
               addListener(collectionRef, "child_removed", (snapshot) => applyEntity(snapshot, true));
             });
           }
@@ -9325,7 +9388,16 @@
             const collectionRefs = Object.fromEntries(
               CLOUD_ENTITY_COLLECTIONS.map((collection) => [collection, rootRef.child(collection)])
             );
-            const refs = [configRef, ...CLOUD_ENTITY_COLLECTIONS.map((collection) => collectionRefs[collection])];
+            const savedPaymentMap = entityListToMap(stateRef.current.payments || []);
+            const paymentSince = savedPaymentMap && Object.keys(savedPaymentMap).length ? cloudSyncSince() : null;
+            const refs = [
+              configRef,
+              ...CLOUD_ENTITY_COLLECTIONS.map((collection) =>
+                collection === "payments" && paymentSince
+                  ? collectionRefs[collection].orderByChild("updatedAt").startAt(paymentSince)
+                  : collectionRefs[collection]
+              ),
+            ];
             const snapshots = await Promise.all(refs.map((targetRef) => targetRef.once("value")));
             const payload = {
               schemaVersion: Number(schemaSnapshot.val() || CLOUD_SCHEMA_VERSION),
@@ -9334,7 +9406,10 @@
               config: snapshots[0].val() || {},
             };
             CLOUD_ENTITY_COLLECTIONS.forEach((collection, index) => {
-              payload[collection] = snapshots[index + 1].val() || {};
+              const remoteValue = snapshots[index + 1].val() || {};
+              payload[collection] = collection === "payments" && paymentSince
+                ? { ...savedPaymentMap, ...remoteValue }
+                : remoteValue;
             });
             return { payload, configRef, collectionRefs };
           }
@@ -9364,6 +9439,7 @@
                 remoteReadyRef.current = true;
                 stateRef.current = merged;
                 setState(merged);
+                safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
                 setSyncStatus({
                   kind: "online",
                   label: "Cloud",
@@ -9385,6 +9461,7 @@
                 remoteReadyRef.current = true;
                 stateRef.current = migratedState;
                 setState(migratedState);
+                safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
                 setSyncStatus({
                   kind: "online",
                   label: "Cloud",
