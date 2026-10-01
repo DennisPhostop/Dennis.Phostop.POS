@@ -2570,6 +2570,7 @@
         cloudConfig,
         setCloudConfig,
         syncStatus,
+        onFullCloudRefresh,
         hiddenKitchenTicketIds,
         setHiddenKitchenTicketIds,
         kitchenTicketProgress,
@@ -3394,6 +3395,7 @@
                     cloudConfig={cloudConfig}
                     setCloudConfig={setCloudConfig}
                     syncStatus={syncStatus}
+                    onFullCloudRefresh={onFullCloudRefresh}
                   />
                 )}
               </section>
@@ -8250,7 +8252,7 @@
         );
       }
 
-      function SettingsView({ state, setState, cloudConfig, setCloudConfig, syncStatus }) {
+      function SettingsView({ state, setState, cloudConfig, setCloudConfig, syncStatus, onFullCloudRefresh }) {
         const settings = { ...defaultSettings, ...(state.settings || {}) };
         const staffDirectory = state.staff?.length ? state.staff : defaultStaffDirectory;
         const emptyStaffForm = { id: "", name: "", role: "Server", pin: "" };
@@ -8258,6 +8260,8 @@
         const [staffForm, setStaffForm] = useState(emptyStaffForm);
         const [cloudForm, setCloudForm] = useState({ ...defaultCloudConfig, ...(cloudConfig || {}) });
         const [cloudCopyMessage, setCloudCopyMessage] = useState("");
+        const [cloudRefreshMessage, setCloudRefreshMessage] = useState("");
+        const [cloudRefreshing, setCloudRefreshing] = useState(false);
         const [printerStatus, setPrinterStatus] = useState(() =>
           hasAndroidPrinterBridge()
             ? "Android printer mode is ready. Pair MRBOSS E2000 in Redmi Bluetooth settings, then connect it here."
@@ -8378,6 +8382,20 @@
             cloudSetupUrl(next),
             "Sync link copied and enabled here. Open it once on phone, iPad, or PC."
           );
+        }
+
+        async function refreshAllCloudSales() {
+          if (cloudRefreshing || typeof onFullCloudRefresh !== "function") return;
+          setCloudRefreshing(true);
+          setCloudRefreshMessage("Downloading all Firebase sales...");
+          try {
+            const result = await onFullCloudRefresh();
+            setCloudRefreshMessage(result?.message || (result?.ok ? "All Firebase sales refreshed." : "Unable to refresh Firebase sales."));
+          } catch (error) {
+            setCloudRefreshMessage(error?.message || "Unable to refresh Firebase sales.");
+          } finally {
+            setCloudRefreshing(false);
+          }
         }
 
         async function testBluetoothPrinter() {
@@ -8645,6 +8663,29 @@
                     >
                       Copy 共用 POS 網址
                     </button>
+                  </div>
+
+                  <div className="mt-4 rounded-lg border border-sky-400/30 bg-sky-500/10 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h5 className="font-black text-sky-100">刷新全部 Firebase Sales</h5>
+                        <p className="mt-1 text-sm leading-6 text-zinc-400">
+                          電腦數目不一致時使用。只會重新下載及合併雲端資料，不會刪除 iPad 或 Firebase 訂單。
+                        </p>
+                      </div>
+                      <button
+                        onClick={refreshAllCloudSales}
+                        disabled={cloudRefreshing || syncStatus.kind !== "online"}
+                        className="min-h-12 shrink-0 rounded-lg bg-sky-300 px-5 font-black text-sky-950 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {cloudRefreshing ? "正在刷新..." : "完整刷新 Sales"}
+                      </button>
+                    </div>
+                    {cloudRefreshMessage ? (
+                      <div className="mt-3 rounded-lg border border-sky-400/20 bg-black/20 p-3 text-sm text-sky-100">
+                        {cloudRefreshMessage}
+                      </div>
+                    ) : null}
                   </div>
 
                   <details className="mt-4 rounded-lg border border-line bg-panel p-4" open={!cloudFieldsReady}>
@@ -9244,6 +9285,63 @@
           }
         }
 
+        async function refreshAllCloudSales() {
+          if (!hasCloudConfig(cloudConfig)) {
+            return { ok: false, message: "Firebase sync is not configured on this device." };
+          }
+          if (!remoteRef.current || !remoteReadyRef.current) {
+            return { ok: false, message: "Firebase is still connecting. Wait for Cloud, then try again." };
+          }
+          if (pendingRemoteWriteRef.current) {
+            return { ok: false, message: "A cloud save is still running. Please try again in a moment." };
+          }
+
+          setSyncStatus({ kind: "syncing", label: "Syncing", message: "Downloading all Firebase sales" });
+          try {
+            const rootRef = remoteRef.current;
+            const snapshotRefs = [
+              rootRef.child("schemaVersion"),
+              rootRef.child("config"),
+              ...CLOUD_ENTITY_COLLECTIONS.map((collection) => rootRef.child(collection)),
+            ];
+            const snapshots = await Promise.all(snapshotRefs.map((targetRef) => targetRef.once("value")));
+            if (!snapshots[0].exists()) {
+              throw new Error("Firebase POS data was not found.");
+            }
+
+            const payload = {
+              schemaVersion: Number(snapshots[0].val() || CLOUD_SCHEMA_VERSION),
+              deviceId: "",
+              updatedAt: new Date().toISOString(),
+              config: snapshots[1].val() || {},
+            };
+            CLOUD_ENTITY_COLLECTIONS.forEach((collection, index) => {
+              payload[collection] = snapshots[index + 2].val() || {};
+            });
+
+            const normalizedPayload = normalizeCloudPayload(payload);
+            const merged = mergeCloudState(
+              cloudPayloadToState(normalizedPayload),
+              stateRef.current,
+              true
+            );
+            lastRemotePayloadRef.current = normalizedPayload;
+            cloudPayloadCacheRef.current = { refs: {}, values: {} };
+            lastCloudRelevantRefsRef.current = null;
+            stateRef.current = merged;
+            setState(merged);
+            safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
+            const salesCount = (merged.payments || []).filter((payment) => !payment.voided).length;
+            const message = `Full Firebase refresh complete: ${salesCount} paid sales loaded.`;
+            setSyncStatus({ kind: "online", label: "Cloud", message });
+            return { ok: true, message };
+          } catch (error) {
+            const message = error?.message || "Full Firebase refresh failed.";
+            setSyncStatus({ kind: "error", label: "Error", message });
+            return { ok: false, message };
+          }
+        }
+
         useEffect(() => {
           stateRef.current = state;
           if (localStorageTimerRef.current) clearTimeout(localStorageTimerRef.current);
@@ -9519,6 +9617,7 @@
             cloudConfig={cloudConfig}
             setCloudConfig={setCloudConfig}
             syncStatus={syncStatus}
+            onFullCloudRefresh={refreshAllCloudSales}
             hiddenKitchenTicketIds={hiddenKitchenTicketIds}
             setHiddenKitchenTicketIds={setHiddenKitchenTicketIds}
             kitchenTicketProgress={kitchenTicketProgress}
