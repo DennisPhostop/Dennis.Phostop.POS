@@ -9538,6 +9538,15 @@
                 addListener(todayPaymentsQuery, "child_changed", (snapshot) => applyEntity(snapshot));
               }
 
+              // Firebase only stores the current day's kitchen tickets here, so
+              // following the whole small collection is safe. This also catches
+              // an order created while the POS was offline and uploaded later
+              // with its original (older) updatedAt timestamp.
+              if (collection === "kitchenTickets") {
+                addListener(collectionRef, "child_added", (snapshot) => applyEntity(snapshot));
+                addListener(collectionRef, "child_changed", (snapshot) => applyEntity(snapshot));
+              }
+
               // A full child_added listener replays every historical sale whenever
               // the POS starts. Listen only to recent/upcoming changes instead.
               const liveSince = cloudSyncSince() || new Date(Date.now() - 5 * 60 * 1000).toISOString();
