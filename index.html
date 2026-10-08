@@ -4618,6 +4618,17 @@
           }
         }
 
+        function clearActiveTickets() {
+          if (activeTickets.length === 0) return;
+          if (
+            window.confirm(
+              `Remove all ${activeTickets.length} active kitchen orders from this KDS? Sales, payments and receipts will stay.`
+            )
+          ) {
+            onClearCompleted(activeTickets.map((ticket) => ticket.id));
+          }
+        }
+
         return (
           <div className="h-full overflow-auto p-3 sm:p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -4637,11 +4648,11 @@
               <div className="flex gap-2">
                 <button
                   type="button"
-                  disabled={completedTickets.length === 0}
-                  onClick={clearCompletedTickets}
+                  disabled={activeTickets.length === 0}
+                  onClick={clearActiveTickets}
                   className="min-h-10 rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 text-xs font-black text-rose-200 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  Delete Completed ({completedTickets.length})
+                  Delete All Orders ({activeTickets.length})
                 </button>
                 <button
                   onClick={() => setShowCompleted((value) => !value)}
