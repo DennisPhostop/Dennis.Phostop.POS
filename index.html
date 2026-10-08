@@ -2136,15 +2136,20 @@
       function applyLocalKitchenProgress(ticket, progress) {
         if (!ticket) return ticket;
         const hasLocalProgress = progress && typeof progress === "object";
+        const remoteCompleted = Boolean(ticket.archived || ticket.status === "Served");
         const doneItemIds = new Set(
-          hasLocalProgress
+          remoteCompleted
+            ? (ticket.items || []).map((item) => item.id)
+            : hasLocalProgress
             ? progress.doneItemIds || []
             : (ticket.items || []).filter((item) => item.kitchenDone).map((item) => item.id)
         );
-        const completed = hasLocalProgress
+        const completed = remoteCompleted || (hasLocalProgress
           ? Boolean(progress.completed)
-          : Boolean(ticket.archived || ticket.status === "Served");
-        const status = hasLocalProgress
+          : false);
+        const status = remoteCompleted
+          ? "Served"
+          : hasLocalProgress
           ? progress.status || (completed ? "Served" : doneItemIds.size ? "Preparing" : "New")
           : ticket.status || "New";
         return {
@@ -2152,7 +2157,11 @@
           items: (ticket.items || []).map((item) => ({ ...item, kitchenDone: doneItemIds.has(item.id) })),
           status: completed ? "Served" : status,
           archived: completed,
-          localCompletedAt: hasLocalProgress ? progress.completedAt || null : ticket.archivedAt || null,
+          localCompletedAt: remoteCompleted
+            ? ticket.archivedAt || ticket.updatedAt || null
+            : hasLocalProgress
+            ? progress.completedAt || null
+            : null,
         };
       }
 
@@ -3076,6 +3085,25 @@
         }
 
         function updateKitchenStatus(ticketId, status) {
+          const now = new Date().toISOString();
+          setState((current) => ({
+            ...current,
+            kitchenTickets: (current.kitchenTickets || []).map((ticket) =>
+              ticket.id === ticketId
+                ? {
+                    ...ticket,
+                    status,
+                    archived: status === "Served",
+                    archivedAt: status === "Served" ? now : null,
+                    items: (ticket.items || []).map((item) => ({
+                      ...item,
+                      kitchenDone: status === "New" ? false : item.kitchenDone,
+                    })),
+                    updatedAt: now,
+                  }
+                : ticket
+            ),
+          }));
           setKitchenTicketProgress((current) => ({
             ...(current || {}),
             [ticketId]: {
@@ -3084,7 +3112,7 @@
               status,
               completed: false,
               completedAt: null,
-              updatedAt: new Date().toISOString(),
+              updatedAt: now,
             },
           }));
         }
@@ -3116,6 +3144,21 @@
           const now = new Date().toISOString();
           const ticket = visibleKitchenTickets.find((item) => item.id === ticketId);
           if (!ticket) return;
+          setState((current) => ({
+            ...current,
+            kitchenTickets: (current.kitchenTickets || []).map((item) =>
+              item.id === ticketId
+                ? {
+                    ...item,
+                    items: (item.items || []).map((line) => ({ ...line, kitchenDone: true })),
+                    status: "Served",
+                    archived: true,
+                    archivedAt: now,
+                    updatedAt: now,
+                  }
+                : item
+            ),
+          }));
           setKitchenTicketProgress((current) => ({
             ...(current || {}),
             [ticketId]: {
@@ -9484,6 +9527,15 @@
                 queueRemoteMerge(false);
               };
 
+              // Always follow today's payments by business date. Offline sales can
+              // reach Firebase much later than their original updatedAt timestamp,
+              // so an updatedAt-only listener can miss them on the KDS tablets.
+              if (collection === "payments") {
+                const todayPaymentsQuery = collectionRef.orderByChild("date").equalTo(todayKey());
+                addListener(todayPaymentsQuery, "child_added", (snapshot) => applyEntity(snapshot));
+                addListener(todayPaymentsQuery, "child_changed", (snapshot) => applyEntity(snapshot));
+              }
+
               // A full child_added listener replays every historical sale whenever
               // the POS starts. Listen only to recent/upcoming changes instead.
               const liveSince = cloudSyncSince() || new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -9512,6 +9564,10 @@
               ),
             ];
             const snapshots = await Promise.all(refs.map((targetRef) => targetRef.once("value")));
+            const todayPaymentsSnapshot = await collectionRefs.payments
+              .orderByChild("date")
+              .equalTo(todayKey())
+              .once("value");
             const payload = {
               schemaVersion: Number(schemaSnapshot.val() || CLOUD_SCHEMA_VERSION),
               deviceId: "",
@@ -9521,7 +9577,7 @@
             CLOUD_ENTITY_COLLECTIONS.forEach((collection, index) => {
               const remoteValue = snapshots[index + 1].val() || {};
               payload[collection] = collection === "payments" && paymentSince
-                ? { ...savedPaymentMap, ...remoteValue }
+                ? { ...savedPaymentMap, ...remoteValue, ...(todayPaymentsSnapshot.val() || {}) }
                 : remoteValue;
             });
             return { payload, configRef, collectionRefs };
