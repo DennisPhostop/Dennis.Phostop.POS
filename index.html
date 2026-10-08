@@ -4538,7 +4538,11 @@
           .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
         const completedTickets = currentTickets
           .filter((ticket) => ticket.archived || ticket.status === "Served")
-          .sort((a, b) => new Date(b.archivedAt || b.updatedAt || 0) - new Date(a.archivedAt || a.updatedAt || 0));
+          .sort(
+            (a, b) =>
+              new Date(b.localCompletedAt || b.archivedAt || b.updatedAt || b.createdAt || 0) -
+              new Date(a.localCompletedAt || a.archivedAt || a.updatedAt || a.createdAt || 0)
+          );
         const newTicketCount = activeTickets.filter((ticket) => ticket.status === "New").length;
 
         useEffect(() => {
@@ -4722,7 +4726,7 @@
                         <div className="min-w-0">
                           <div className="truncate text-sm font-black">{ticket.orderNumber}</div>
                           <div className="text-xs text-zinc-500">
-                            {ticket.tableId ? `Table ${ticket.tableId}` : "Takeaway"} / {displayTime(ticket.archivedAt || ticket.updatedAt || ticket.createdAt)}
+                            {ticket.tableId ? `Table ${ticket.tableId}` : "Takeaway"} / Completed {displayTime(ticket.localCompletedAt || ticket.archivedAt || ticket.updatedAt || ticket.createdAt)}
                           </div>
                           {ticket.sentBy && (
                             <div className="mt-0.5 truncate text-[11px] font-bold text-sky-300">
@@ -4736,6 +4740,17 @@
                       </div>
                       <div className="mt-2 text-xs text-zinc-400">
                         {(ticket.items || []).reduce((sum, item) => sum + item.qty, 0)} items
+                      </div>
+                      <div className="mt-1 space-y-0.5 border-t border-line/70 pt-1.5 text-[11px] leading-4 text-zinc-400">
+                        {(ticket.items || []).map((item) => (
+                          <div key={item.id} className="break-words">
+                            <span className="font-black text-zinc-300">{item.qty}x</span> {item.name}
+                            {(item.addons || []).length > 0 && (
+                              <span className="text-orange2"> + {(item.addons || []).map(addonLabel).filter(Boolean).join(" / ")}</span>
+                            )}
+                            {item.note && <span className="block text-orange2">Note: {item.note}</span>}
+                          </div>
+                        ))}
                       </div>
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         <button
