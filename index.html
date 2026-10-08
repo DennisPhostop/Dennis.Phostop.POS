@@ -340,6 +340,7 @@
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
       const CLOUD_LAST_SYNC_KEY = "aurora-ipad-pos-cloud-last-sync-v1";
+      const CLOUD_FULL_SALES_SYNC_KEY = "aurora-ipad-pos-cloud-full-sales-sync-v1";
       const RESET_DEMO_PIN = "8888";
       const LAVU_ADDON_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
       const PREVIOUS_MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
@@ -9458,6 +9459,7 @@
           let ref = null;
           let remoteMergeTimer = null;
           let preferRemoteConfig = false;
+          let connectInProgress = false;
           const listenerBindings = [];
 
           function queueRemoteMerge(configChanged = false) {
@@ -9583,7 +9585,26 @@
             return { payload, configRef, collectionRefs };
           }
 
+          async function reconcileAllCloudPayments(force = false) {
+            if (cancelled || !ref || !lastRemotePayloadRef.current) return;
+            const lastFullSync = safeStorageGet(CLOUD_FULL_SALES_SYNC_KEY);
+            const alreadyCheckedToday = lastFullSync && todayKey(new Date(lastFullSync)) === todayKey();
+            if (!force && alreadyCheckedToday) return;
+
+            setSyncStatus({ kind: "syncing", label: "Syncing", message: "Checking all Firebase sales" });
+            const paymentsSnapshot = await ref.child("payments").once("value");
+            if (cancelled) return;
+            lastRemotePayloadRef.current = {
+              ...lastRemotePayloadRef.current,
+              payments: paymentsSnapshot.val() || {},
+            };
+            safeStorageSet(CLOUD_FULL_SALES_SYNC_KEY, new Date().toISOString());
+            queueRemoteMerge(false);
+          }
+
           async function connectCloud() {
+            if (connectInProgress || cancelled) return;
+            connectInProgress = true;
             try {
               setSyncStatus({ kind: "connecting", label: "Cloud", message: "Connecting" });
               const appName = `pos-${sanitizeCloudPath(cloudConfig.restaurantId)}`;
@@ -9615,6 +9636,7 @@
                   message: `Low-data cloud ${displayTime()}`,
                 });
                 attachGranularListeners(granular.configRef, granular.collectionRefs);
+                await reconcileAllCloudPayments(false);
               } else {
                 const legacyRef = database.ref(cloudStatePath(cloudConfig));
                 const legacySnapshot = await legacyRef.once("value");
@@ -9641,16 +9663,42 @@
                   CLOUD_ENTITY_COLLECTIONS.map((collection) => [collection, ref.child(collection)])
                 );
                 attachGranularListeners(configRef, collectionRefs);
+                safeStorageSet(CLOUD_FULL_SALES_SYNC_KEY, new Date().toISOString());
               }
             } catch (error) {
               setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud connection failed" });
+            } finally {
+              connectInProgress = false;
             }
           }
 
+          async function handleNetworkOnline() {
+            if (cancelled) return;
+            if (!remoteReadyRef.current) {
+              connectCloud();
+              return;
+            }
+            try {
+              await reconcileAllCloudPayments(true);
+              if (!pendingRemoteWriteRef.current) flushCloudState();
+            } catch (error) {
+              setSyncStatus({ kind: "error", label: "Error", message: error?.message || "Sales reconnect failed" });
+            }
+          }
+
+          function handleNetworkOffline() {
+            if (cancelled) return;
+            setSyncStatus({ kind: "offline", label: "Offline", message: "Sales saved on this device" });
+          }
+
           connectCloud();
+          window.addEventListener("online", handleNetworkOnline);
+          window.addEventListener("offline", handleNetworkOffline);
 
           return () => {
             cancelled = true;
+            window.removeEventListener("online", handleNetworkOnline);
+            window.removeEventListener("offline", handleNetworkOffline);
             if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
             if (remoteMergeTimer) clearTimeout(remoteMergeTimer);
             listenerBindings.forEach(({ targetRef, eventName, handler }) => {
