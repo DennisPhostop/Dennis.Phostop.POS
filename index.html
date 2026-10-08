@@ -4636,6 +4636,14 @@
               </div>
               <div className="flex gap-2">
                 <button
+                  type="button"
+                  disabled={completedTickets.length === 0}
+                  onClick={clearCompletedTickets}
+                  className="min-h-10 rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 text-xs font-black text-rose-200 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Delete Completed ({completedTickets.length})
+                </button>
+                <button
                   onClick={() => setShowCompleted((value) => !value)}
                   className={cx(
                     "min-h-10 rounded-lg border px-3 text-xs font-black",
