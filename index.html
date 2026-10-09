@@ -335,12 +335,12 @@
       const STORAGE_KEY = "aurora-ipad-pos-state-v1";
       const KDS_HIDDEN_KEY = "aurora-ipad-pos-kds-hidden-v1";
       const KDS_PROGRESS_KEY = "aurora-ipad-pos-kds-progress-v1";
+      const KDS_LOCAL_UPDATED_KEY = "aurora-ipad-pos-kds-local-updated-v1";
       const KDS_DAY_KEY = "aurora-ipad-pos-kds-day-v1";
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
       const CLOUD_LAST_SYNC_KEY = "aurora-ipad-pos-cloud-last-sync-v1";
-      const CLOUD_FULL_SALES_SYNC_KEY = "aurora-ipad-pos-cloud-full-sales-sync-v1";
       const RESET_DEMO_PIN = "8888";
       const LAVU_ADDON_MENU_VERSION = "phostop-active-menu-v20-beef-stew-photo";
       const PREVIOUS_MENU_VERSION = "phostop-active-menu-v21-lavu-addons";
@@ -1051,8 +1051,16 @@
           ...current,
           menuItems: (current.menuItems || []).map(({ image: unusedImage, ...item }) => item),
           orders: compactTransactionList(current.orders),
-          kitchenTickets: compactTransactionList(current.kitchenTickets),
-          payments: compactTransactionList(current.payments),
+          // KDS is a daily workflow, not a historical report. Keep only
+          // today's tickets on this device; payments retain sales history.
+          kitchenTickets: compactTransactionList(
+            (current.kitchenTickets || []).filter((ticket) => kitchenTicketDay(ticket) === todayKey())
+          ),
+          // Keep today's and not-yet-synced payments in tablet memory. Complete
+          // sales history remains in Firebase and is loaded only for Reports.
+          payments: compactTransactionList(
+            keepLocalUnsyncedAndTodayPayments(current.payments || [])
+          ),
         };
       }
 
@@ -1206,7 +1214,9 @@
           kitchenTickets: compactTransactionList(saved.kitchenTickets).filter(
             (ticket) => !ticket?.createdAt || kitchenTicketDay(ticket) === todayKey()
           ),
-          payments: compactTransactionList(saved.payments),
+          payments: compactTransactionList(
+            keepLocalUnsyncedAndTodayPayments(saved.payments || [])
+          ),
           suppliers: saved.suppliers?.length ? saved.suppliers : defaultSuppliers.map((supplier) => ({ ...supplier })),
           supplierRecords: saved.supplierRecords || [],
           timecards: saved.timecards || [],
@@ -1903,6 +1913,17 @@
         return new Date(Math.max(0, timestamp - overlapMs)).toISOString();
       }
 
+      function keepLocalUnsyncedAndTodayPayments(payments, syncSince = cloudSyncSince()) {
+        if (!syncSince) return payments || [];
+        const syncTime = Date.parse(syncSince);
+        if (!Number.isFinite(syncTime)) return payments || [];
+        return (payments || []).filter((payment) => {
+          const date = String(payment?.date || payment?.paidAt || "").slice(0, 10);
+          const updatedAt = Date.parse(entityUpdatedAt(payment) || "");
+          return date === todayKey() || !Number.isFinite(updatedAt) || updatedAt > syncTime;
+        });
+      }
+
       function cloudStatePath(config) {
         return `restaurants/${sanitizeCloudPath(config.restaurantId)}/posState`;
       }
@@ -1938,6 +1959,12 @@
         if (!timestamp) return todayKey();
         const date = new Date(timestamp);
         return Number.isNaN(date.getTime()) ? todayKey() : todayKey(date);
+      }
+
+      function businessDayStartIso(day = todayKey()) {
+        const [year, month, date] = String(day).split("-").map(Number);
+        if (!year || !month || !date) return new Date().toISOString();
+        return new Date(year, month - 1, date).toISOString();
       }
 
       function cloudMenuItems(items) {
@@ -2170,6 +2197,17 @@
         }
       }
 
+      function mergeKdsDeviceProgress(remoteProgress, localProgress) {
+        const merged = { ...(remoteProgress || {}), ...(localProgress || {}) };
+        Object.entries(remoteProgress || {}).forEach(([ticketId, remoteEntry]) => {
+          const localEntry = localProgress?.[ticketId];
+          if (!localEntry || entityUpdatedAt(remoteEntry) > entityUpdatedAt(localEntry)) {
+            merged[ticketId] = remoteEntry;
+          }
+        });
+        return merged;
+      }
+
       function applyLocalKitchenProgress(ticket, progress) {
         if (!ticket) return ticket;
         const hasLocalProgress = progress && typeof progress === "object";
@@ -2305,6 +2343,7 @@
           safeStorageRemove(SESSION_KEY);
           safeStorageRemove(KDS_HIDDEN_KEY);
           safeStorageRemove(KDS_PROGRESS_KEY);
+          safeStorageRemove(KDS_LOCAL_UPDATED_KEY);
           setPin("");
           setMessage("Device session repaired. Sales and clock records were kept.");
         }
@@ -2613,7 +2652,9 @@
         setCloudConfig,
         syncStatus,
         onFullCloudRefresh,
-        onRefreshKitchenTickets,
+        salesHistory,
+        salesHistoryLoading,
+        onClearSalesHistory,
         hiddenKitchenTicketIds,
         setHiddenKitchenTicketIds,
         kitchenTicketProgress,
@@ -2693,7 +2734,18 @@
         useEffect(() => {
           if (previousBusinessDayRef.current === businessDay) return;
           previousBusinessDayRef.current = businessDay;
+          safeStorageSet(KDS_LOCAL_UPDATED_KEY, new Date().toISOString());
           safeStorageSet(KDS_DAY_KEY, businessDay);
+          // Each KDS starts its own clean kitchen day. Do not touch Payments or
+          // menu sales quantities, which are the historical sales record.
+          setState((current) => {
+            const kitchenTickets = (current.kitchenTickets || []).filter(
+              (ticket) => kitchenTicketDay(ticket) === businessDay
+            );
+            return kitchenTickets.length === (current.kitchenTickets || []).length
+              ? current
+              : { ...current, kitchenTickets };
+          });
           setHiddenKitchenTicketIds([]);
           setKitchenTicketProgress({});
         }, [businessDay, setHiddenKitchenTicketIds, setKitchenTicketProgress]);
@@ -3175,20 +3227,16 @@
 
         function clearCompletedKitchenTickets(ticketIds = []) {
           if (!ticketIds.length) return;
+          const now = new Date().toISOString();
           setHiddenKitchenTicketIds((current) => {
             const next = Array.from(new Set([...(current || []), ...ticketIds]));
             // Persist immediately so a fast manual reload cannot bring the
             // removed orders back before React's normal storage effect runs.
             safeStorageSet(KDS_DAY_KEY, todayKey());
             safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(next));
+            safeStorageSet(KDS_LOCAL_UPDATED_KEY, now);
             return next;
           });
-        }
-
-        function restoreHiddenKitchenTickets() {
-          safeStorageSet(KDS_DAY_KEY, todayKey());
-          safeStorageSet(KDS_HIDDEN_KEY, "[]");
-          setHiddenKitchenTicketIds([]);
         }
 
         function archiveKitchenTicket(ticketId) {
@@ -3215,10 +3263,12 @@
         }
 
         function removeKitchenTicket(ticketId) {
+          const now = new Date().toISOString();
           setHiddenKitchenTicketIds((current) => {
             const next = current?.includes(ticketId) ? current : [...(current || []), ticketId];
             safeStorageSet(KDS_DAY_KEY, todayKey());
             safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(next));
+            safeStorageSet(KDS_LOCAL_UPDATED_KEY, now);
             return next;
           });
         }
@@ -3277,7 +3327,13 @@
                     <button
                       key={item.id}
                       data-testid={`nav-${item.id}`}
-                      onClick={() => setView(item.id)}
+                      onClick={() => {
+                        if (item.id === "reports" && !salesHistory && !salesHistoryLoading) {
+                          onFullCloudRefresh?.();
+                        }
+                        if (item.id !== "reports" && view === "reports") onClearSalesHistory?.();
+                        setView(item.id);
+                      }}
                       className={cx(
                         "min-h-16 rounded-lg border px-2 text-sm font-semibold transition active:scale-[.98]",
                         view === item.id
@@ -3412,13 +3468,10 @@
                 {view === "kds" && (
                   <KdsView
                     tickets={visibleKitchenTickets}
-                    hiddenCount={(hiddenKitchenTicketIds || []).length}
-                    onRefreshOrders={onRefreshKitchenTickets}
                     onStatus={updateKitchenStatus}
                     onToggleItem={toggleKitchenItem}
                     onConfirm={confirmKitchenTicket}
                     onClearCompleted={clearCompletedKitchenTickets}
-                    onRestoreHidden={restoreHiddenKitchenTickets}
                     onRemove={removeKitchenTicket}
                   />
                 )}
@@ -3438,7 +3491,11 @@
                   />
                 )}
                 {view === "reports" && (
-                  <ReportsView payments={state.payments} supplierRecords={state.supplierRecords || []} />
+                  <ReportsView
+                    payments={salesHistory || state.payments}
+                    supplierRecords={state.supplierRecords || []}
+                    salesHistoryLoading={salesHistoryLoading}
+                  />
                 )}
                 {view === "supplier" && (
                   <SupplierView state={state} setState={setState} />
@@ -4589,11 +4646,9 @@
         );
       }
 
-      function KdsView({ tickets, hiddenCount = 0, onRefreshOrders, onStatus, onToggleItem, onConfirm, onClearCompleted, onRestoreHidden, onRemove }) {
+      function KdsView({ tickets, onStatus, onToggleItem, onConfirm, onClearCompleted, onRemove }) {
         const [bellEnabled, setBellEnabled] = useState(false);
         const [showCompleted, setShowCompleted] = useState(false);
-        const [refreshingOrders, setRefreshingOrders] = useState(false);
-        const [refreshMessage, setRefreshMessage] = useState("");
         const currentTickets = tickets.filter(
           (ticket) => !ticket.deletedAt && ticket.status !== "Cancelled"
         );
@@ -4639,31 +4694,6 @@
           }
         }
 
-        function clearActiveTickets() {
-          if (activeTickets.length === 0) return;
-          if (
-            window.confirm(
-              `Remove all ${activeTickets.length} active kitchen orders from this KDS? Sales, payments and receipts will stay.`
-            )
-          ) {
-            onClearCompleted(activeTickets.map((ticket) => ticket.id));
-          }
-        }
-
-        async function refreshOrders() {
-          if (refreshingOrders || typeof onRefreshOrders !== "function") return;
-          setRefreshingOrders(true);
-          setRefreshMessage("Checking Firebase...");
-          try {
-            const result = await onRefreshOrders();
-            setRefreshMessage(result?.message || (result?.ok ? "Orders refreshed." : "Unable to refresh orders."));
-          } catch (error) {
-            setRefreshMessage(error?.message || "Unable to refresh orders.");
-          } finally {
-            setRefreshingOrders(false);
-          }
-        }
-
         return (
           <div className="h-full overflow-auto p-3 sm:p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -4681,31 +4711,6 @@
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={refreshingOrders}
-                  onClick={refreshOrders}
-                  className="min-h-10 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 text-xs font-black text-cyan-200 disabled:cursor-wait disabled:opacity-60"
-                >
-                  {refreshingOrders ? "Refreshing..." : "Refresh Orders"}
-                </button>
-                {hiddenCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={onRestoreHidden}
-                    className="min-h-10 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 text-xs font-black text-amber-200"
-                  >
-                    Restore Hidden ({hiddenCount})
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={activeTickets.length === 0}
-                  onClick={clearActiveTickets}
-                  className="min-h-10 rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 text-xs font-black text-rose-200 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Delete All Orders ({activeTickets.length})
-                </button>
                 <button
                   onClick={() => setShowCompleted((value) => !value)}
                   className={cx(
@@ -4730,12 +4735,6 @@
                 </button>
               </div>
             </div>
-
-            {refreshMessage && (
-              <div className="mb-3 rounded-md border border-cyan-400/20 bg-cyan-500/5 px-3 py-2 text-xs font-bold text-cyan-100">
-                {refreshMessage}
-              </div>
-            )}
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {activeTickets.map((ticket) => (
@@ -5443,7 +5442,7 @@
         return code >= 701 && code <= 717;
       }
 
-      function ReportsView({ payments, supplierRecords }) {
+      function ReportsView({ payments, supplierRecords, salesHistoryLoading = false }) {
         const [reportMode, setReportMode] = useState("business");
         return (
           <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -5453,6 +5452,9 @@
                 <div className="mt-1 text-lg font-black text-white">
                   {reportMode === "rice-meals" ? "Rice Meals" : "Whole Business"}
                 </div>
+                {salesHistoryLoading ? (
+                  <div className="mt-1 text-xs font-semibold text-sky-300">Loading complete Firebase sales history…</div>
+                ) : null}
               </div>
               <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-panel p-1">
                 <button
@@ -9333,6 +9335,8 @@
 
       function App() {
         const [state, setState] = useState(loadState);
+        const [salesHistory, setSalesHistory] = useState(null);
+        const [salesHistoryLoading, setSalesHistoryLoading] = useState(false);
         const [cloudConfig, setCloudConfig] = useState(loadCloudConfig);
         const currentKdsDay = todayKey();
         const continuingKdsDay = safeStorageGet(KDS_DAY_KEY) === currentKdsDay;
@@ -9342,6 +9346,9 @@
         const [kitchenTicketProgress, setKitchenTicketProgress] = useState(() =>
           continuingKdsDay ? loadKitchenTicketProgress() : {}
         );
+        const [kdsCloudStateReady, setKdsCloudStateReady] = useState(false);
+        const initialHiddenStateRef = useRef(null);
+        const initialProgressStateRef = useRef(null);
         const [syncStatus, setSyncStatus] = useState({
           kind: "local",
           label: "Local",
@@ -9437,42 +9444,17 @@
             return { ok: false, message: "A cloud save is still running. Please try again in a moment." };
           }
 
-          setSyncStatus({ kind: "syncing", label: "Syncing", message: "Downloading all Firebase sales" });
+          setSalesHistoryLoading(true);
+          setSyncStatus({ kind: "syncing", label: "Syncing", message: "Loading complete Firebase sales history" });
           try {
-            const rootRef = remoteRef.current;
-            const snapshotRefs = [
-              rootRef.child("schemaVersion"),
-              rootRef.child("config"),
-              ...CLOUD_ENTITY_COLLECTIONS.map((collection) => rootRef.child(collection)),
-            ];
-            const snapshots = await Promise.all(snapshotRefs.map((targetRef) => targetRef.once("value")));
-            if (!snapshots[0].exists()) {
-              throw new Error("Firebase POS data was not found.");
-            }
-
-            const payload = {
-              schemaVersion: Number(snapshots[0].val() || CLOUD_SCHEMA_VERSION),
-              deviceId: "",
-              updatedAt: new Date().toISOString(),
-              config: snapshots[1].val() || {},
-            };
-            CLOUD_ENTITY_COLLECTIONS.forEach((collection, index) => {
-              payload[collection] = snapshots[index + 2].val() || {};
-            });
-
-            const normalizedPayload = normalizeCloudPayload(payload);
-            const merged = mergeCloudState(
-              cloudPayloadToState(normalizedPayload),
-              stateRef.current,
-              true
+            const paymentsSnapshot = await remoteRef.current.child("payments").once("value");
+            const cloudPayments = entityMapToList(paymentsSnapshot.val() || {});
+            const mergedPayments = mergeEntityLists(
+              cloudPayments,
+              stateRef.current.payments || []
             );
-            lastRemotePayloadRef.current = normalizedPayload;
-            cloudPayloadCacheRef.current = { refs: {}, values: {} };
-            lastCloudRelevantRefsRef.current = null;
-            stateRef.current = merged;
-            setState(merged);
-            safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
-            const salesCount = (merged.payments || []).filter((payment) => !payment.voided).length;
+            setSalesHistory(mergedPayments);
+            const salesCount = mergedPayments.filter((payment) => !payment.voided).length;
             const message = `Full Firebase refresh complete: ${salesCount} paid sales loaded.`;
             setSyncStatus({ kind: "online", label: "Cloud", message });
             return { ok: true, message };
@@ -9480,6 +9462,8 @@
             const message = error?.message || "Full Firebase refresh failed.";
             setSyncStatus({ kind: "error", label: "Error", message });
             return { ok: false, message };
+          } finally {
+            setSalesHistoryLoading(false);
           }
         }
 
@@ -9493,7 +9477,11 @@
 
           setSyncStatus({ kind: "syncing", label: "Syncing", message: "Downloading kitchen orders" });
           try {
-            const ticketsSnapshot = await remoteRef.current.child("kitchenTickets").once("value");
+            const ticketsSnapshot = await remoteRef.current
+              .child("kitchenTickets")
+              .orderByChild("createdAt")
+              .startAt(businessDayStartIso())
+              .once("value");
             const remoteTicketMap = entityListToMap(entityMapToList(ticketsSnapshot.val() || {}));
             lastRemotePayloadRef.current = {
               ...lastRemotePayloadRef.current,
@@ -9555,11 +9543,46 @@
 
         useEffect(() => {
           safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(hiddenKitchenTicketIds));
+          if (initialHiddenStateRef.current === null) {
+            initialHiddenStateRef.current = JSON.stringify(hiddenKitchenTicketIds);
+            return;
+          }
+          safeStorageSet(KDS_LOCAL_UPDATED_KEY, new Date().toISOString());
         }, [hiddenKitchenTicketIds]);
 
         useEffect(() => {
           safeStorageSet(KDS_PROGRESS_KEY, JSON.stringify(kitchenTicketProgress));
+          if (initialProgressStateRef.current === null) {
+            initialProgressStateRef.current = JSON.stringify(kitchenTicketProgress);
+            return;
+          }
+          safeStorageSet(KDS_LOCAL_UPDATED_KEY, new Date().toISOString());
         }, [kitchenTicketProgress]);
+
+        useEffect(() => {
+          if (!kdsCloudStateReady || !remoteReadyRef.current || !hasCloudConfig(cloudConfig)) return;
+          const deviceStateRef = remoteRef.current?.child(
+            `kdsDeviceState/${sanitizeCloudPath(deviceIdRef.current)}`
+          );
+          if (!deviceStateRef) return;
+          deviceStateRef.set({
+            businessDay: todayKey(),
+            hiddenTicketIds: hiddenKitchenTicketIds || [],
+            ticketProgress: kitchenTicketProgress || {},
+            updatedAt: new Date().toISOString(),
+          }).catch((error) => console.warn("KDS device state cloud save failed", error));
+        }, [hiddenKitchenTicketIds, kitchenTicketProgress, kdsCloudStateReady, cloudConfig]);
+
+        useEffect(() => {
+          // Upgrade devices that already hid/completed tickets before the local
+          // timestamp existed, so an older cloud snapshot cannot resurrect them.
+          if (
+            continuingKdsDay &&
+            ((hiddenKitchenTicketIds || []).length > 0 || Object.keys(kitchenTicketProgress || {}).length > 0)
+          ) {
+            safeStorageSet(KDS_LOCAL_UPDATED_KEY, new Date().toISOString());
+          }
+        }, []);
 
         useEffect(() => {
           remoteRef.current = null;
@@ -9608,6 +9631,7 @@
                 stateRef.current,
                 preferRemoteConfig
               );
+              merged.payments = keepLocalUnsyncedAndTodayPayments(merged.payments || []);
               preferRemoteConfig = false;
               stateRef.current = merged;
               setState(merged);
@@ -9674,13 +9698,17 @@
                 addListener(todayPaymentsQuery, "child_changed", (snapshot) => applyEntity(snapshot));
               }
 
-              // Firebase only stores the current day's kitchen tickets here, so
-              // following the whole small collection is safe. This also catches
-              // an order created while the POS was offline and uploaded later
-              // with its original (older) updatedAt timestamp.
+              // Read only this business day's KDS tickets. A device can hide or
+              // restore its own tickets without deleting another kitchen's copy.
+              // This avoids replaying days of completed orders on every refresh.
               if (collection === "kitchenTickets") {
-                addListener(collectionRef, "child_added", (snapshot) => applyEntity(snapshot));
-                addListener(collectionRef, "child_changed", (snapshot) => applyEntity(snapshot));
+                const todayTicketsQuery = collectionRef
+                  .orderByChild("createdAt")
+                  .startAt(businessDayStartIso());
+                addListener(todayTicketsQuery, "child_added", (snapshot) => applyEntity(snapshot));
+                addListener(todayTicketsQuery, "child_changed", (snapshot) => applyEntity(snapshot));
+                addListener(todayTicketsQuery, "child_removed", (snapshot) => applyEntity(snapshot, true));
+                return;
               }
 
               // A full child_added listener replays every historical sale whenever
@@ -9700,21 +9728,20 @@
             const collectionRefs = Object.fromEntries(
               CLOUD_ENTITY_COLLECTIONS.map((collection) => [collection, rootRef.child(collection)])
             );
-            const savedPaymentMap = entityListToMap(stateRef.current.payments || []);
-            const paymentSince = savedPaymentMap && Object.keys(savedPaymentMap).length ? cloudSyncSince() : null;
+            const todayPaymentsRef = collectionRefs.payments.orderByChild("date").equalTo(todayKey());
             const refs = [
               configRef,
-              ...CLOUD_ENTITY_COLLECTIONS.map((collection) =>
-                collection === "payments" && paymentSince
-                  ? collectionRefs[collection].orderByChild("updatedAt").startAt(paymentSince)
-                  : collectionRefs[collection]
-              ),
+              ...CLOUD_ENTITY_COLLECTIONS.map((collection) => {
+                if (collection === "payments") return todayPaymentsRef;
+                if (collection === "kitchenTickets") {
+                  return collectionRefs.kitchenTickets
+                    .orderByChild("createdAt")
+                    .startAt(businessDayStartIso());
+                }
+                return collectionRefs[collection];
+              }),
             ];
             const snapshots = await Promise.all(refs.map((targetRef) => targetRef.once("value")));
-            const todayPaymentsSnapshot = await collectionRefs.payments
-              .orderByChild("date")
-              .equalTo(todayKey())
-              .once("value");
             const payload = {
               schemaVersion: Number(schemaSnapshot.val() || CLOUD_SCHEMA_VERSION),
               deviceId: "",
@@ -9723,33 +9750,15 @@
             };
             CLOUD_ENTITY_COLLECTIONS.forEach((collection, index) => {
               const remoteValue = snapshots[index + 1].val() || {};
-              payload[collection] = collection === "payments" && paymentSince
-                ? { ...savedPaymentMap, ...remoteValue, ...(todayPaymentsSnapshot.val() || {}) }
-                : remoteValue;
+              payload[collection] = remoteValue;
             });
             return { payload, configRef, collectionRefs };
-          }
-
-          async function reconcileAllCloudPayments(force = false) {
-            if (cancelled || !ref || !lastRemotePayloadRef.current) return;
-            const lastFullSync = safeStorageGet(CLOUD_FULL_SALES_SYNC_KEY);
-            const alreadyCheckedToday = lastFullSync && todayKey(new Date(lastFullSync)) === todayKey();
-            if (!force && alreadyCheckedToday) return;
-
-            setSyncStatus({ kind: "syncing", label: "Syncing", message: "Checking all Firebase sales" });
-            const paymentsSnapshot = await ref.child("payments").once("value");
-            if (cancelled) return;
-            lastRemotePayloadRef.current = {
-              ...lastRemotePayloadRef.current,
-              payments: paymentsSnapshot.val() || {},
-            };
-            safeStorageSet(CLOUD_FULL_SALES_SYNC_KEY, new Date().toISOString());
-            queueRemoteMerge(false);
           }
 
           async function connectCloud() {
             if (connectInProgress || cancelled) return;
             connectInProgress = true;
+            setKdsCloudStateReady(false);
             try {
               setSyncStatus({ kind: "connecting", label: "Cloud", message: "Connecting" });
               const appName = `pos-${sanitizeCloudPath(cloudConfig.restaurantId)}`;
@@ -9759,8 +9768,32 @@
               const database = firebase.database(app);
               ref = database.ref(cloudV2Path(cloudConfig));
               remoteRef.current = ref;
-              const granular = await readGranularPayload(ref);
+              const [granular, deviceStateSnapshot] = await Promise.all([
+                readGranularPayload(ref),
+                ref.child(`kdsDeviceState/${sanitizeCloudPath(deviceIdRef.current)}`).once("value"),
+              ]);
               if (cancelled) return;
+
+              const savedDeviceState = deviceStateSnapshot.val();
+              const currentDay = todayKey();
+              if (savedDeviceState?.businessDay === currentDay) {
+                const localKdsUpdatedAt = Date.parse(safeStorageGet(KDS_LOCAL_UPDATED_KEY) || "") || 0;
+                const cloudKdsUpdatedAt = Date.parse(savedDeviceState.updatedAt || "") || 0;
+                if (Array.isArray(savedDeviceState.hiddenTicketIds)) {
+                  if (cloudKdsUpdatedAt > localKdsUpdatedAt) {
+                    setHiddenKitchenTicketIds(savedDeviceState.hiddenTicketIds);
+                  }
+                }
+                if (savedDeviceState.ticketProgress && typeof savedDeviceState.ticketProgress === "object") {
+                  setKitchenTicketProgress((current) =>
+                    mergeKdsDeviceProgress(savedDeviceState.ticketProgress, current)
+                  );
+                }
+              } else if (savedDeviceState) {
+                setHiddenKitchenTicketIds([]);
+                setKitchenTicketProgress({});
+              }
+              setKdsCloudStateReady(true);
 
               if (granular?.payload?.schemaVersion) {
                 const normalizedPayload = normalizeCloudPayload(granular.payload);
@@ -9771,6 +9804,7 @@
                   stateRef.current,
                   true
                 );
+                merged.payments = keepLocalUnsyncedAndTodayPayments(merged.payments || []);
                 remoteReadyRef.current = true;
                 stateRef.current = merged;
                 setState(merged);
@@ -9781,7 +9815,6 @@
                   message: `Low-data cloud ${displayTime()}`,
                 });
                 attachGranularListeners(granular.configRef, granular.collectionRefs);
-                await reconcileAllCloudPayments(false);
               } else {
                 const legacyRef = database.ref(cloudStatePath(cloudConfig));
                 const legacySnapshot = await legacyRef.once("value");
@@ -9790,6 +9823,7 @@
                 const migratedState = legacyPayload?.state
                   ? mergeCloudState(legacyPayload.state, stateRef.current, true)
                   : hydrateState(stateRef.current);
+                migratedState.payments = keepLocalUnsyncedAndTodayPayments(migratedState.payments || []);
                 const migratedPayload = cloudPayloadFromState(migratedState, deviceIdRef.current);
                 await ref.set(migratedPayload);
                 if (cancelled) return;
@@ -9808,7 +9842,6 @@
                   CLOUD_ENTITY_COLLECTIONS.map((collection) => [collection, ref.child(collection)])
                 );
                 attachGranularListeners(configRef, collectionRefs);
-                safeStorageSet(CLOUD_FULL_SALES_SYNC_KEY, new Date().toISOString());
               }
             } catch (error) {
               setSyncStatus({ kind: "error", label: "Error", message: error.message || "Cloud connection failed" });
@@ -9825,9 +9858,8 @@
             }
             try {
               await refreshCloudKitchenTickets();
-              await reconcileAllCloudPayments(true);
             } catch (error) {
-              setSyncStatus({ kind: "error", label: "Error", message: error?.message || "Sales reconnect failed" });
+              setSyncStatus({ kind: "error", label: "Error", message: error?.message || "Cloud reconnect failed" });
             }
           }
 
@@ -9874,6 +9906,9 @@
           cloudConfig.projectId,
           cloudConfig.appId,
           cloudConfig.restaurantId,
+          user?.role,
+          user?.title,
+          user?.name,
         ]);
 
         if (!user) {
@@ -9898,7 +9933,9 @@
             setCloudConfig={setCloudConfig}
             syncStatus={syncStatus}
             onFullCloudRefresh={refreshAllCloudSales}
-            onRefreshKitchenTickets={refreshCloudKitchenTickets}
+            salesHistory={salesHistory}
+            salesHistoryLoading={salesHistoryLoading}
+            onClearSalesHistory={() => setSalesHistory(null)}
             hiddenKitchenTicketIds={hiddenKitchenTicketIds}
             setHiddenKitchenTicketIds={setHiddenKitchenTicketIds}
             kitchenTicketProgress={kitchenTicketProgress}
