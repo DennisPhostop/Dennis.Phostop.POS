@@ -2137,30 +2137,26 @@
       function applyLocalKitchenProgress(ticket, progress) {
         if (!ticket) return ticket;
         const hasLocalProgress = progress && typeof progress === "object";
-        const remoteCompleted = Boolean(ticket.archived || ticket.status === "Served");
+        // KDS work is device-local. Older builds wrote Served/archived back to
+        // Firebase, which made one kitchen screen clear the ticket everywhere.
+        // Ignore that shared completion state unless this device recorded it.
+        const locallyCompleted = hasLocalProgress && Boolean(progress.completed);
         const doneItemIds = new Set(
-          remoteCompleted
-            ? (ticket.items || []).map((item) => item.id)
-            : hasLocalProgress
+          hasLocalProgress
             ? progress.doneItemIds || []
-            : (ticket.items || []).filter((item) => item.kitchenDone).map((item) => item.id)
+            : []
         );
-        const completed = remoteCompleted || (hasLocalProgress
-          ? Boolean(progress.completed)
-          : false);
-        const status = remoteCompleted
-          ? "Served"
-          : hasLocalProgress
-          ? progress.status || (completed ? "Served" : doneItemIds.size ? "Preparing" : "New")
-          : ticket.status || "New";
+        const status = hasLocalProgress
+          ? progress.status || (locallyCompleted ? "Served" : doneItemIds.size ? "Preparing" : "New")
+          : ticket.status === "Cancelled"
+          ? "Cancelled"
+          : "New";
         return {
           ...ticket,
           items: (ticket.items || []).map((item) => ({ ...item, kitchenDone: doneItemIds.has(item.id) })),
-          status: completed ? "Served" : status,
-          archived: completed,
-          localCompletedAt: remoteCompleted
-            ? ticket.archivedAt || ticket.updatedAt || null
-            : hasLocalProgress
+          status: locallyCompleted ? "Served" : status,
+          archived: locallyCompleted || ticket.status === "Cancelled",
+          localCompletedAt: hasLocalProgress
             ? progress.completedAt || null
             : null,
         };
@@ -3087,24 +3083,6 @@
 
         function updateKitchenStatus(ticketId, status) {
           const now = new Date().toISOString();
-          setState((current) => ({
-            ...current,
-            kitchenTickets: (current.kitchenTickets || []).map((ticket) =>
-              ticket.id === ticketId
-                ? {
-                    ...ticket,
-                    status,
-                    archived: status === "Served",
-                    archivedAt: status === "Served" ? now : null,
-                    items: (ticket.items || []).map((item) => ({
-                      ...item,
-                      kitchenDone: status === "New" ? false : item.kitchenDone,
-                    })),
-                    updatedAt: now,
-                  }
-                : ticket
-            ),
-          }));
           setKitchenTicketProgress((current) => ({
             ...(current || {}),
             [ticketId]: {
@@ -3145,21 +3123,6 @@
           const now = new Date().toISOString();
           const ticket = visibleKitchenTickets.find((item) => item.id === ticketId);
           if (!ticket) return;
-          setState((current) => ({
-            ...current,
-            kitchenTickets: (current.kitchenTickets || []).map((item) =>
-              item.id === ticketId
-                ? {
-                    ...item,
-                    items: (item.items || []).map((line) => ({ ...line, kitchenDone: true })),
-                    status: "Served",
-                    archived: true,
-                    archivedAt: now,
-                    updatedAt: now,
-                  }
-                : item
-            ),
-          }));
           setKitchenTicketProgress((current) => ({
             ...(current || {}),
             [ticketId]: {
@@ -3178,6 +3141,10 @@
           setHiddenKitchenTicketIds((current) =>
             Array.from(new Set([...(current || []), ...ticketIds]))
           );
+        }
+
+        function restoreHiddenKitchenTickets() {
+          setHiddenKitchenTicketIds([]);
         }
 
         function archiveKitchenTicket(ticketId) {
@@ -3398,10 +3365,12 @@
                 {view === "kds" && (
                   <KdsView
                     tickets={visibleKitchenTickets}
+                    hiddenCount={(hiddenKitchenTicketIds || []).length}
                     onStatus={updateKitchenStatus}
                     onToggleItem={toggleKitchenItem}
                     onConfirm={confirmKitchenTicket}
                     onClearCompleted={clearCompletedKitchenTickets}
+                    onRestoreHidden={restoreHiddenKitchenTickets}
                     onRemove={removeKitchenTicket}
                   />
                 )}
@@ -4572,10 +4541,12 @@
         );
       }
 
-      function KdsView({ tickets, onStatus, onToggleItem, onConfirm, onClearCompleted, onRemove }) {
+      function KdsView({ tickets, hiddenCount = 0, onStatus, onToggleItem, onConfirm, onClearCompleted, onRestoreHidden, onRemove }) {
         const [bellEnabled, setBellEnabled] = useState(false);
         const [showCompleted, setShowCompleted] = useState(false);
-        const currentTickets = tickets.filter((ticket) => !ticket.deletedAt);
+        const currentTickets = tickets.filter(
+          (ticket) => !ticket.deletedAt && ticket.status !== "Cancelled"
+        );
         const knownTicketsRef = useRef(new Set(currentTickets.map((ticket) => ticket.id)));
         const activeTickets = currentTickets
           .filter((ticket) => !ticket.archived && ticket.status !== "Served")
@@ -4645,7 +4616,16 @@
                   </span>
                 )}
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                {hiddenCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={onRestoreHidden}
+                    className="min-h-10 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 text-xs font-black text-amber-200"
+                  >
+                    Restore Hidden ({hiddenCount})
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={activeTickets.length === 0}
