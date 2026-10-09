@@ -20,7 +20,12 @@ import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.Gravity;
 import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -43,7 +48,9 @@ public class MainActivity extends Activity {
     private static final int BLUETOOTH_PERMISSION_REQUEST = 4102;
     private static final int STORAGE_PERMISSION_REQUEST = 4103;
     private WebView webView;
+    private FrameLayout webViewContainer;
     private PrinterBridge printerBridge;
+    private int rendererRecoveryAttempts = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -51,14 +58,22 @@ public class MainActivity extends Activity {
         requestBluetoothPermissions();
         requestStoragePermission();
 
-        webView = new WebView(this);
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        webViewContainer = new FrameLayout(this);
+        setContentView(webViewContainer);
+        loadPosPage();
+        printerBridge.autoConnectLastPrinter();
+    }
+
+    private void loadPosPage() {
+        if (isFinishing() || webViewContainer == null) return;
+
+        WebView nextWebView = new WebView(this);
+        nextWebView.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
-        setContentView(webView);
 
-        WebSettings settings = webView.getSettings();
+        WebSettings settings = nextWebView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
@@ -68,9 +83,11 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        printerBridge = new PrinterBridge(this, webView);
-        webView.addJavascriptInterface(printerBridge, "AndroidPrinter");
-        webView.setWebViewClient(new WebViewClient() {
+        webView = nextWebView;
+        if (printerBridge == null) printerBridge = new PrinterBridge(this, nextWebView);
+        else printerBridge.attachWebView(nextWebView);
+        nextWebView.addJavascriptInterface(printerBridge, "AndroidPrinter");
+        nextWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -78,16 +95,119 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Intent.ACTION_VIEW, uri));
                 return true;
             }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        android.webkit.WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (view == webView && request.isForMainFrame()) {
+                    showNativeError("The POS page could not load. Check Wi-Fi or mobile data, then try again.");
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                            android.webkit.WebResourceResponse response) {
+                super.onReceivedHttpError(view, request, response);
+                if (view == webView && request.isForMainFrame() && response.getStatusCode() >= 500) {
+                    showNativeError("The POS server is temporarily unavailable. Please try again.");
+                }
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (view == webView && POS_URL.equals(url)) {
+                    webViewContainer.postDelayed(() -> {
+                        if (view == webView) rendererRecoveryAttempts = 0;
+                    }, 60_000);
+                }
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                if (view != webView) return true;
+                removeWebView(view);
+                rendererRecoveryAttempts++;
+                if (rendererRecoveryAttempts <= 2) {
+                    webViewContainer.postDelayed(() -> loadPosPage(), 900);
+                } else {
+                    showNativeError("The POS page stopped unexpectedly. Tap Retry to reopen it.");
+                }
+                return true;
+            }
         });
-        webView.setWebChromeClient(new WebChromeClient());
-        webView.loadUrl(POS_URL);
-        printerBridge.autoConnectLastPrinter();
+        nextWebView.setWebChromeClient(new WebChromeClient());
+        webViewContainer.removeAllViews();
+        webViewContainer.addView(nextWebView);
+        nextWebView.loadUrl(POS_URL);
+    }
+
+    private void removeWebView(WebView view) {
+        if (view == null) return;
+        if (webViewContainer != null) webViewContainer.removeView(view);
+        view.removeJavascriptInterface("AndroidPrinter");
+        view.stopLoading();
+        view.destroy();
+        if (webView == view) webView = null;
+    }
+
+    private void showNativeError(String message) {
+        if (webViewContainer == null || isFinishing()) return;
+        if (webView != null) removeWebView(webView);
+        webViewContainer.removeAllViews();
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setGravity(Gravity.CENTER);
+        int padding = (int) (24 * getResources().getDisplayMetrics().density);
+        panel.setPadding(padding, padding, padding, padding);
+        panel.setBackgroundColor(0xFF07090D);
+
+        TextView title = new TextView(this);
+        title.setText("Pho Stop POS");
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(24);
+        title.setGravity(Gravity.CENTER);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        panel.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView details = new TextView(this);
+        details.setText(message);
+        details.setTextColor(0xFFCFD5E2);
+        details.setTextSize(16);
+        details.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        detailParams.topMargin = padding / 2;
+        panel.addView(details, detailParams);
+
+        Button retry = new Button(this);
+        retry.setText("Retry POS");
+        retry.setOnClickListener(ignored -> {
+            rendererRecoveryAttempts = 0;
+            loadPosPage();
+        });
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        retryParams.topMargin = padding / 2;
+        panel.addView(retry, retryParams);
+        webViewContainer.addView(panel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        if (webView != null) webView.onResume();
         if (printerBridge != null) printerBridge.autoConnectLastPrinter();
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) webView.onPause();
+        super.onPause();
     }
 
     @Override
@@ -131,7 +251,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (printerBridge != null) printerBridge.close();
-        if (webView != null) webView.destroy();
+        if (webView != null) {
+            webView.stopLoading();
+            webView.destroy();
+            webView = null;
+        }
         super.onDestroy();
     }
 
@@ -142,7 +266,7 @@ public class MainActivity extends Activity {
         private static final String LAST_PRINTER_NAME = "last_printer_name";
         private final Activity activity;
         private final Context context;
-        private final WebView webView;
+        private WebView webView;
         private final BluetoothAdapter adapter;
         private final SharedPreferences preferences;
         private BluetoothSocket socket;
@@ -158,6 +282,10 @@ public class MainActivity extends Activity {
             BluetoothManager manager = (BluetoothManager) activity.getSystemService(Context.BLUETOOTH_SERVICE);
             this.adapter = manager == null ? null : manager.getAdapter();
             this.preferences = activity.getSharedPreferences(PRINTER_PREFS, Context.MODE_PRIVATE);
+        }
+
+        synchronized void attachWebView(WebView nextWebView) {
+            this.webView = nextWebView;
         }
 
         private boolean hasConnectPermission() {
