@@ -337,6 +337,7 @@
       const KDS_PROGRESS_KEY = "aurora-ipad-pos-kds-progress-v1";
       const KDS_LOCAL_UPDATED_KEY = "aurora-ipad-pos-kds-local-updated-v1";
       const KDS_DAY_KEY = "aurora-ipad-pos-kds-day-v1";
+      const EMPTY_ORDERS_CLEANED_DAY_KEY = "aurora-ipad-pos-empty-orders-cleaned-day-v1";
       const SESSION_KEY = "aurora-ipad-pos-session-v1";
       const CLOUD_CONFIG_KEY = "aurora-ipad-pos-cloud-config-v1";
       const DEVICE_ID_KEY = "aurora-ipad-pos-device-id-v1";
@@ -1046,13 +1047,58 @@
         return (items || []).map(compactTransactionEntity);
       }
 
+      function compactOrderForStorage(order) {
+        if (order?.status !== "Cancelled") return compactTransactionEntity(order);
+        return {
+          id: order.id,
+          number: order.number,
+          type: order.type,
+          tableId: order.tableId ?? null,
+          status: "Cancelled",
+          cancelledAt: order.cancelledAt || order.updatedAt || order.createdAt || new Date().toISOString(),
+          updatedAt: order.updatedAt || order.cancelledAt || order.createdAt || new Date().toISOString(),
+          cancelledBy: order.cancelledBy || "Staff",
+          cancelReason: order.cancelReason || "Cancelled",
+          items: [],
+        };
+      }
+
+      function clearEmptyOpenOrders(
+        current,
+        now = new Date().toISOString(),
+        cancelledBy = "System",
+        cancelReason = "Automatic nightly cleanup of empty order"
+      ) {
+        const emptyIds = new Set((current.orders || [])
+          .filter((order) => ["Open", "Sent"].includes(order.status) && Array.isArray(order.items) && order.items.length === 0)
+          .map((order) => order.id));
+        if (!emptyIds.size) return current;
+        return {
+          ...current,
+          orders: (current.orders || []).map((order) => emptyIds.has(order.id)
+            ? {
+                ...order,
+                status: "Cancelled",
+                cancelledAt: now,
+                updatedAt: now,
+                cancelledBy,
+                cancelReason,
+                items: [],
+              }
+            : order),
+          tables: (current.tables || []).map((table) => emptyIds.has(table.orderId)
+            ? { ...table, status: "Available", orderId: null }
+            : table),
+        };
+      }
+
       function compactStateForStorage(current) {
         return {
           ...current,
           menuItems: (current.menuItems || []).map(({ image: unusedImage, ...item }) => item),
-          orders: compactTransactionList(
-            (current.orders || []).filter((order) => !["Paid", "Cancelled"].includes(order.status))
-          ),
+          orders: (current.orders || [])
+            .filter((order) => order.status !== "Paid")
+            .map(compactOrderForStorage),
           // KDS is a daily workflow, not a historical report. Keep only
           // today's tickets on this device; payments retain sales history.
           kitchenTickets: compactTransactionList(
@@ -1212,9 +1258,9 @@
               ? restoreSummerFreshRoll(mergeLavuAddonOptions(saved.menuItems?.length ? saved.menuItems : defaultMenu))
               : saved.menuItems?.length ? saved.menuItems : defaultMenu
           )),
-          orders: compactTransactionList(
-            (saved.orders || []).filter((order) => !["Paid", "Cancelled"].includes(order.status))
-          ),
+          orders: (saved.orders || [])
+            .filter((order) => order.status !== "Paid")
+            .map(compactOrderForStorage),
           kitchenTickets: compactTransactionList(saved.kitchenTickets).filter(
             (ticket) => !ticket?.createdAt || kitchenTicketDay(ticket) === todayKey()
           ),
@@ -1299,7 +1345,7 @@
           Paid: 3,
           Cancelled: 3,
         });
-        return { ...older, ...newer, status, items, deletedLineIds };
+        return { ...older, ...newer, status, items: status === "Cancelled" ? [] : items, deletedLineIds };
       }
 
       function mergeKitchenTicketEntity(remoteTicket, localTicket) {
@@ -1342,7 +1388,7 @@
           return payment
             ? { ...order, status: "Paid", paidAt: payment.paidAt, paymentId: payment.id }
             : order;
-        }).filter((order) => !["Paid", "Cancelled"].includes(order.status));
+        }).filter((order) => order.status !== "Paid");
         const mergedKitchenTickets = mergeEntityLists(
           remote.kitchenTickets,
           local.kitchenTickets,
@@ -2019,9 +2065,9 @@
           supplierRecords: cachedCollection("supplierRecords", current.supplierRecords, () => entityListToMap(current.supplierRecords)),
           leaveRequests: cachedCollection("leaveRequests", current.leaveRequests, () => entityListToMap(current.leaveRequests)),
           orders: cachedCollection("orders", current.orders, () =>
-            entityListToMap(compactTransactionList(
-              current.orders.filter((order) => !["Paid", "Cancelled"].includes(order.status))
-            ))
+            entityListToMap(current.orders
+              .filter((order) => order.status !== "Paid")
+              .map(compactOrderForStorage))
           ),
           kitchenTickets: cachedCollection("kitchenTickets", current.kitchenTickets, () =>
             entityListToMap(compactTransactionList(
@@ -2057,9 +2103,7 @@
           timecards: entityMapToList(normalized.timecards),
           supplierRecords: entityMapToList(normalized.supplierRecords),
           leaveRequests: entityMapToList(normalized.leaveRequests),
-          orders: entityMapToList(normalized.orders).filter(
-            (order) => !["Paid", "Cancelled"].includes(order.status)
-          ),
+          orders: entityMapToList(normalized.orders).filter((order) => order.status !== "Paid"),
           kitchenTickets: entityMapToList(normalized.kitchenTickets).filter(
             (ticket) => kitchenTicketDay(ticket) === todayKey()
           ),
@@ -2682,6 +2726,7 @@
           : monitorNavItems;
         const [view, setView] = useState(() => (mainPosHost ? "tables" : "kds"));
         const [selectedTableId, setSelectedTableId] = useState(1);
+        const [pendingOrderType, setPendingOrderType] = useState("Dine In");
         const [activeOrderId, setActiveOrderId] = useState(null);
         const [selectedOrderId, setSelectedOrderId] = useState(null);
         const [receipt, setReceipt] = useState(null);
@@ -2757,6 +2802,25 @@
           setKitchenTicketProgress({});
         }, [businessDay, setHiddenKitchenTicketIds, setKitchenTicketProgress]);
 
+        useEffect(() => {
+          if (!mainPosHost || (hasCloudConfig(cloudConfig) && !kdsInitialLoadResolved)) return;
+          if (safeStorageGet(EMPTY_ORDERS_CLEANED_DAY_KEY) === businessDay) return;
+          // Mark this device's business day once, then cancel only empty active
+          // orders. Held tabs, food orders, payments, and KDS history are kept.
+          safeStorageSet(EMPTY_ORDERS_CLEANED_DAY_KEY, businessDay);
+          setState((current) => clearEmptyOpenOrders(current));
+        }, [businessDay, mainPosHost, cloudConfig, kdsInitialLoadResolved, setState]);
+
+        function clearEmptyOrdersManually() {
+          const emptyOrderCount = state.orders.filter(
+            (order) => ["Open", "Sent"].includes(order.status) && Array.isArray(order.items) && order.items.length === 0
+          ).length;
+          if (!emptyOrderCount) return;
+          if (!window.confirm(`Clear ${emptyOrderCount} empty unpaid orders? Held orders, orders with food, and Sales history will be kept.`)) return;
+          const now = new Date().toISOString();
+          setState((current) => clearEmptyOpenOrders(current, now, user.name || "Manager", "Manual empty order cleanup"));
+        }
+
         function logout() {
           safeStorageRemove(SESSION_KEY);
           setUser(null);
@@ -2780,6 +2844,7 @@
         function createOrderForTable(tableId) {
           const table = state.tables.find((item) => item.id === tableId);
           setSelectedTableId(tableId);
+          setPendingOrderType("Dine In");
           const existing = state.orders.find(
             (order) =>
               !["Paid", "Cancelled"].includes(order.status) &&
@@ -2798,44 +2863,17 @@
             return;
           }
 
-          const order = {
-            id: uid("order"),
-            number: `T${String(tableId).padStart(2, "0")}-${Date.now().toString().slice(-4)}`,
-            type: "Dine In",
-            tableId,
-            items: [],
-            discount: 0,
-            discountPercent: 0,
-            status: "Open",
-            createdAt: new Date().toISOString(),
-          };
-          setState((current) => ({
-            ...current,
-            tables: current.tables.map((item) =>
-              item.id === tableId ? { ...item, status: "Occupied", orderId: order.id } : item
-            ),
-            orders: [order, ...current.orders],
-          }));
-          setActiveOrderId(order.id);
-          setSelectedOrderId(order.id);
+          // Do not create or sync an empty placeholder. addItem creates the
+          // actual order the moment the first menu item is selected.
+          setActiveOrderId(null);
+          setSelectedOrderId(null);
           setView("pos");
         }
 
         function createTakeawayOrder() {
-          const order = {
-            id: uid("order"),
-            number: `TA-${Date.now().toString().slice(-5)}`,
-            type: "Takeaway",
-            tableId: null,
-            items: [],
-            discount: 0,
-            discountPercent: 0,
-            status: "Open",
-            createdAt: new Date().toISOString(),
-          };
-          setState((current) => ({ ...current, orders: [order, ...current.orders] }));
-          setActiveOrderId(order.id);
-          setSelectedOrderId(order.id);
+          setPendingOrderType("Takeaway");
+          setActiveOrderId(null);
+          setSelectedOrderId(null);
           setView("pos");
         }
 
@@ -2859,10 +2897,12 @@
             let order = orders.find((item) => item.id === orderId);
 
             if (!order) {
-              const tableId = selectedTableId || 1;
-              order = orders.find(
-                (item) => item.tableId === tableId && !["Paid", "Cancelled"].includes(item.status)
-              );
+              const tableId = pendingOrderType === "Takeaway" ? null : selectedTableId || 1;
+              order = pendingOrderType === "Takeaway"
+                ? null
+                : orders.find(
+                    (item) => item.tableId === tableId && !["Paid", "Cancelled"].includes(item.status)
+                  );
               if (order) {
                 orderId = order.id;
                 tables = tables.map((table) =>
@@ -2872,11 +2912,13 @@
             }
 
             if (!order) {
-              const tableId = selectedTableId || 1;
+              const tableId = pendingOrderType === "Takeaway" ? null : selectedTableId || 1;
               order = {
                 id: uid("order"),
-                number: `T${String(tableId).padStart(2, "0")}-${Date.now().toString().slice(-4)}`,
-                type: "Dine In",
+                number: tableId
+                  ? `T${String(tableId).padStart(2, "0")}-${Date.now().toString().slice(-4)}`
+                  : `TA-${Date.now().toString().slice(-5)}`,
+                type: tableId ? "Dine In" : "Takeaway",
                 tableId,
                 items: [],
                 discount: 0,
@@ -2886,9 +2928,11 @@
               };
               orderId = order.id;
               orders = [order, ...orders];
-              tables = tables.map((table) =>
-                table.id === tableId ? { ...table, status: "Occupied", orderId: order.id } : table
-              );
+              if (tableId) {
+                tables = tables.map((table) =>
+                  table.id === tableId ? { ...table, status: "Occupied", orderId: order.id } : table
+                );
+              }
             }
 
             const nextOrders = orders.map((item) => {
@@ -3112,13 +3156,15 @@
             ...current,
             orders: current.orders.map((item) =>
               item.id === order.id
-                ? {
-                    ...item,
-                    status: "Cancelled",
-                    cancelledAt: now,
-                    cancelledBy: user.name,
-                    cancelReason: reason,
-                  }
+                  ? {
+                      ...item,
+                      status: "Cancelled",
+                      cancelledAt: now,
+                      updatedAt: now,
+                      cancelledBy: user.name,
+                      cancelReason: reason,
+                      items: [],
+                    }
                 : item
             ),
             tables: current.tables.map((table) =>
@@ -3491,6 +3537,7 @@
                     onSelect={(orderId) => setSelectedOrderId(orderId)}
                     onPayment={completePayment}
                     onCancel={cancelOrder}
+                    onClearEmptyOrders={clearEmptyOrdersManually}
                     onVoidPayment={voidPaidPayment}
                     onReceipt={setReceipt}
                     onSendPaidToKitchen={sendPaidOrderToKitchen}
@@ -4914,7 +4961,7 @@
         );
       }
 
-      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onVoidPayment, onReceipt, onSendPaidToKitchen, onTables, historyOnly = false }) {
+      function CashierView({ orders, payments, selectedOrder, onSelect, onPayment, onCancel, onClearEmptyOrders, onVoidPayment, onReceipt, onSendPaidToKitchen, onTables, historyOnly = false }) {
         const [listMode, setListMode] = useState(() => (historyOnly ? "paid" : "unpaid"));
         const [historySearch, setHistorySearch] = useState("");
         const [historyDate, setHistoryDate] = useState(todayKey());
@@ -4931,6 +4978,9 @@
         const changeDue = method === "Cash" ? Math.max(0, cashTendered - totals.total) : 0;
         const needsReference = method === "Card" || method === "PayNow / QR Pay";
         const canPay = Boolean(selectedOrder && (selectedOrder.items || []).length > 0 && !cashShort);
+        const emptyOrderCount = (orders || []).filter(
+          (order) => ["Open", "Sent"].includes(order.status) && Array.isArray(order.items) && order.items.length === 0
+        ).length;
         const paidPayments = useMemo(
           () => [...(payments || [])].sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0)),
           [payments]
@@ -5062,6 +5112,16 @@
                   }).length})
                 </button>
               </div>}
+
+              {!historyOnly && listMode === "unpaid" && emptyOrderCount > 0 && (
+                <button
+                  onClick={onClearEmptyOrders}
+                  className="mb-3 min-h-12 shrink-0 rounded-md border border-cyan-100 bg-cyan-300 px-3 text-sm font-black text-zinc-950 shadow-[0_0_18px_rgba(103,232,249,0.4)] transition active:scale-[.98] hover:bg-cyan-200"
+                  data-testid="clear-empty-orders"
+                >
+                  Clear Empty Orders ({emptyOrderCount})
+                </button>
+              )}
 
               {listMode === "paid" && (
                 <div className="mb-3 shrink-0 space-y-2">
@@ -9754,13 +9814,16 @@
                 };
               }
               if (collection === "orders") {
-                // Closed orders are represented in Payments for Sales and
-                // receipts. Kitchen/POS startup only needs open and held tabs.
+                // Payments retain Sales history. Keep lightweight cancellation
+                // tombstones so a stale/offline tablet cannot resurrect an
+                // empty order after it has been cleared elsewhere.
                 return {
                   collection,
                   refs: [
                     collectionRefs.orders.orderByChild("status").equalTo("Open"),
                     collectionRefs.orders.orderByChild("status").equalTo("Held"),
+                    collectionRefs.orders.orderByChild("status").equalTo("Sent"),
+                    collectionRefs.orders.orderByChild("status").equalTo("Cancelled"),
                   ],
                 };
               }
