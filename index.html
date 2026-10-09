@@ -1854,7 +1854,17 @@
           ) {
             return { ...defaultCloudConfig };
           }
-          return { ...defaultCloudConfig, ...normalizeCloudConfig(saved || {}) };
+          const normalizedSaved = { ...defaultCloudConfig, ...normalizeCloudConfig(saved || {}) };
+          const officialPosHost = window.location.hostname === "dennisphostop.github.io";
+          const builtInFields = ["restaurantId", "apiKey", "authDomain", "databaseURL", "projectId", "appId"];
+          const hasWrongOfficialCloud = officialPosHost && (
+            !normalizedSaved.enabled ||
+            builtInFields.some((key) => normalizedSaved[key] !== defaultCloudConfig[key])
+          );
+          // The official POS always belongs to the built-in Dennis Firebase.
+          // Repair stale per-device settings so one iPad cannot silently listen
+          // to a disabled or different restaurant path.
+          return hasWrongOfficialCloud ? { ...defaultCloudConfig } : normalizedSaved;
         } catch (error) {
           return { ...defaultCloudConfig };
         }
@@ -1985,7 +1995,7 @@
           kitchenTickets: cachedCollection("kitchenTickets", current.kitchenTickets, () =>
             entityListToMap(compactTransactionList(
               current.kitchenTickets.filter(
-                (ticket) => !ticket.deletedAt && kitchenTicketDay(ticket) === currentDay
+                (ticket) => kitchenTicketDay(ticket) === currentDay
               )
             ))
           ),
@@ -2036,6 +2046,16 @@
           new Set([...Object.keys(previousItems), ...Object.keys(nextItems)]).forEach((id) => {
             const previousItem = previousItems[id];
             const nextItem = nextItems[id];
+            // A tablet can briefly be missing a newly received kitchen ticket
+            // before its listener merge finishes. Never interpret that absence
+            // as a cloud deletion; explicit deletedAt tombstones still sync.
+            if (collection === "kitchenTickets" && previousItem && !nextItem) {
+              const ticketAt = Date.parse(
+                previousItem.createdAt || previousItem.sentAt || previousItem.updatedAt || ""
+              );
+              const recentTicket = !Number.isFinite(ticketAt) || Date.now() - ticketAt < 36 * 60 * 60 * 1000;
+              if (recentTicket) return;
+            }
             if (JSON.stringify(previousItem) !== JSON.stringify(nextItem)) {
               patch[`${collection}/${id}`] = nextItem || null;
             }
@@ -2047,6 +2067,22 @@
           patch.updatedAt = next.updatedAt;
         }
         return patch;
+      }
+
+      function applyCloudPatchToPayload(payload, patch) {
+        const next = normalizeCloudPayload(payload || {});
+        Object.entries(patch || {}).forEach(([path, value]) => {
+          if (!path.includes("/")) {
+            next[path] = value;
+            return;
+          }
+          const [collection, id] = path.split("/");
+          if (!CLOUD_ENTITY_COLLECTIONS.includes(collection) || !id) return;
+          next[collection] = { ...(next[collection] || {}) };
+          if (value === null || value === undefined) delete next[collection][id];
+          else next[collection][id] = value;
+        });
+        return normalizeCloudPayload(next);
       }
 
       function firebaseOptions(config) {
@@ -2577,6 +2613,7 @@
         setCloudConfig,
         syncStatus,
         onFullCloudRefresh,
+        onRefreshKitchenTickets,
         hiddenKitchenTicketIds,
         setHiddenKitchenTicketIds,
         kitchenTicketProgress,
@@ -3138,12 +3175,19 @@
 
         function clearCompletedKitchenTickets(ticketIds = []) {
           if (!ticketIds.length) return;
-          setHiddenKitchenTicketIds((current) =>
-            Array.from(new Set([...(current || []), ...ticketIds]))
-          );
+          setHiddenKitchenTicketIds((current) => {
+            const next = Array.from(new Set([...(current || []), ...ticketIds]));
+            // Persist immediately so a fast manual reload cannot bring the
+            // removed orders back before React's normal storage effect runs.
+            safeStorageSet(KDS_DAY_KEY, todayKey());
+            safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(next));
+            return next;
+          });
         }
 
         function restoreHiddenKitchenTickets() {
+          safeStorageSet(KDS_DAY_KEY, todayKey());
+          safeStorageSet(KDS_HIDDEN_KEY, "[]");
           setHiddenKitchenTicketIds([]);
         }
 
@@ -3171,9 +3215,12 @@
         }
 
         function removeKitchenTicket(ticketId) {
-          setHiddenKitchenTicketIds((current) =>
-            current?.includes(ticketId) ? current : [...(current || []), ticketId]
-          );
+          setHiddenKitchenTicketIds((current) => {
+            const next = current?.includes(ticketId) ? current : [...(current || []), ticketId];
+            safeStorageSet(KDS_DAY_KEY, todayKey());
+            safeStorageSet(KDS_HIDDEN_KEY, JSON.stringify(next));
+            return next;
+          });
         }
 
         function clockCurrentUser(type) {
@@ -3366,6 +3413,7 @@
                   <KdsView
                     tickets={visibleKitchenTickets}
                     hiddenCount={(hiddenKitchenTicketIds || []).length}
+                    onRefreshOrders={onRefreshKitchenTickets}
                     onStatus={updateKitchenStatus}
                     onToggleItem={toggleKitchenItem}
                     onConfirm={confirmKitchenTicket}
@@ -4541,9 +4589,11 @@
         );
       }
 
-      function KdsView({ tickets, hiddenCount = 0, onStatus, onToggleItem, onConfirm, onClearCompleted, onRestoreHidden, onRemove }) {
+      function KdsView({ tickets, hiddenCount = 0, onRefreshOrders, onStatus, onToggleItem, onConfirm, onClearCompleted, onRestoreHidden, onRemove }) {
         const [bellEnabled, setBellEnabled] = useState(false);
         const [showCompleted, setShowCompleted] = useState(false);
+        const [refreshingOrders, setRefreshingOrders] = useState(false);
+        const [refreshMessage, setRefreshMessage] = useState("");
         const currentTickets = tickets.filter(
           (ticket) => !ticket.deletedAt && ticket.status !== "Cancelled"
         );
@@ -4600,6 +4650,20 @@
           }
         }
 
+        async function refreshOrders() {
+          if (refreshingOrders || typeof onRefreshOrders !== "function") return;
+          setRefreshingOrders(true);
+          setRefreshMessage("Checking Firebase...");
+          try {
+            const result = await onRefreshOrders();
+            setRefreshMessage(result?.message || (result?.ok ? "Orders refreshed." : "Unable to refresh orders."));
+          } catch (error) {
+            setRefreshMessage(error?.message || "Unable to refresh orders.");
+          } finally {
+            setRefreshingOrders(false);
+          }
+        }
+
         return (
           <div className="h-full overflow-auto p-3 sm:p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -4617,6 +4681,14 @@
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={refreshingOrders}
+                  onClick={refreshOrders}
+                  className="min-h-10 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 text-xs font-black text-cyan-200 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {refreshingOrders ? "Refreshing..." : "Refresh Orders"}
+                </button>
                 {hiddenCount > 0 && (
                   <button
                     type="button"
@@ -4658,6 +4730,12 @@
                 </button>
               </div>
             </div>
+
+            {refreshMessage && (
+              <div className="mb-3 rounded-md border border-cyan-400/20 bg-cyan-500/5 px-3 py-2 text-xs font-bold text-cyan-100">
+                {refreshMessage}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {activeTickets.map((ticket) => (
@@ -9329,7 +9407,12 @@
           setSyncStatus({ kind: "syncing", label: "Syncing", message: "Saving changed records" });
           try {
             await remoteRef.current.update(patch);
-            lastRemotePayloadRef.current = normalizeCloudPayload(nextPayload);
+            // Apply only what this write changed to the latest listener cache.
+            // This preserves any order that arrived while the write was in flight.
+            lastRemotePayloadRef.current = applyCloudPatchToPayload(
+              lastRemotePayloadRef.current,
+              patch
+            );
             safeStorageSet(CLOUD_LAST_SYNC_KEY, new Date().toISOString());
             setSyncStatus({ kind: "online", label: "Cloud", message: `Synced ${displayTime()}` });
           } catch (error) {
@@ -9400,6 +9483,55 @@
           }
         }
 
+        async function refreshCloudKitchenTickets() {
+          if (!hasCloudConfig(cloudConfig)) {
+            return { ok: false, message: "Firebase sync is not configured on this device." };
+          }
+          if (!remoteRef.current || !remoteReadyRef.current || !lastRemotePayloadRef.current) {
+            return { ok: false, message: "Firebase is still connecting. Wait for Cloud, then try again." };
+          }
+
+          setSyncStatus({ kind: "syncing", label: "Syncing", message: "Downloading kitchen orders" });
+          try {
+            const ticketsSnapshot = await remoteRef.current.child("kitchenTickets").once("value");
+            const remoteTicketMap = entityListToMap(entityMapToList(ticketsSnapshot.val() || {}));
+            lastRemotePayloadRef.current = {
+              ...lastRemotePayloadRef.current,
+              kitchenTickets: remoteTicketMap,
+            };
+            const remoteTickets = entityMapToList(remoteTicketMap).filter(
+              (ticket) => kitchenTicketDay(ticket) === todayKey()
+            );
+            const mergedTickets = mergeEntityLists(
+              remoteTickets,
+              stateRef.current.kitchenTickets || [],
+              mergeKitchenTicketEntity
+            );
+            setState((current) => {
+              const next = {
+                ...current,
+                kitchenTickets: mergeEntityLists(
+                  remoteTickets,
+                  current.kitchenTickets || [],
+                  mergeKitchenTicketEntity
+                ),
+              };
+              stateRef.current = next;
+              return next;
+            });
+            const todayCount = mergedTickets.filter(
+              (ticket) => !ticket.deletedAt && kitchenTicketDay(ticket) === todayKey()
+            ).length;
+            const message = `Firebase checked: ${todayCount} kitchen orders loaded for today.`;
+            setSyncStatus({ kind: "online", label: "Cloud", message });
+            return { ok: true, message };
+          } catch (error) {
+            const message = error?.message || "Kitchen order refresh failed.";
+            setSyncStatus({ kind: "error", label: "Error", message });
+            return { ok: false, message };
+          }
+        }
+
         useEffect(() => {
           stateRef.current = state;
           if (localStorageTimerRef.current) clearTimeout(localStorageTimerRef.current);
@@ -9459,10 +9591,15 @@
           let remoteMergeTimer = null;
           let preferRemoteConfig = false;
           let connectInProgress = false;
+          let lastKitchenResumeRefreshAt = 0;
           const listenerBindings = [];
 
           function queueRemoteMerge(configChanged = false) {
             preferRemoteConfig = preferRemoteConfig || configChanged;
+            if (remoteWriteTimerRef.current) {
+              clearTimeout(remoteWriteTimerRef.current);
+              remoteWriteTimerRef.current = null;
+            }
             if (remoteMergeTimer) clearTimeout(remoteMergeTimer);
             remoteMergeTimer = setTimeout(() => {
               if (cancelled || !lastRemotePayloadRef.current) return;
@@ -9687,8 +9824,8 @@
               return;
             }
             try {
+              await refreshCloudKitchenTickets();
               await reconcileAllCloudPayments(true);
-              if (!pendingRemoteWriteRef.current) flushCloudState();
             } catch (error) {
               setSyncStatus({ kind: "error", label: "Error", message: error?.message || "Sales reconnect failed" });
             }
@@ -9699,14 +9836,30 @@
             setSyncStatus({ kind: "offline", label: "Offline", message: "Sales saved on this device" });
           }
 
+          async function handleAppResume() {
+            if (cancelled || document.visibilityState === "hidden") return;
+            const now = Date.now();
+            if (now - lastKitchenResumeRefreshAt < 5000) return;
+            lastKitchenResumeRefreshAt = now;
+            if (!remoteReadyRef.current) {
+              await connectCloud();
+              return;
+            }
+            await refreshCloudKitchenTickets();
+          }
+
           connectCloud();
           window.addEventListener("online", handleNetworkOnline);
           window.addEventListener("offline", handleNetworkOffline);
+          window.addEventListener("pageshow", handleAppResume);
+          document.addEventListener("visibilitychange", handleAppResume);
 
           return () => {
             cancelled = true;
             window.removeEventListener("online", handleNetworkOnline);
             window.removeEventListener("offline", handleNetworkOffline);
+            window.removeEventListener("pageshow", handleAppResume);
+            document.removeEventListener("visibilitychange", handleAppResume);
             if (remoteWriteTimerRef.current) clearTimeout(remoteWriteTimerRef.current);
             if (remoteMergeTimer) clearTimeout(remoteMergeTimer);
             listenerBindings.forEach(({ targetRef, eventName, handler }) => {
@@ -9745,6 +9898,7 @@
             setCloudConfig={setCloudConfig}
             syncStatus={syncStatus}
             onFullCloudRefresh={refreshAllCloudSales}
+            onRefreshKitchenTickets={refreshCloudKitchenTickets}
             hiddenKitchenTicketIds={hiddenKitchenTicketIds}
             setHiddenKitchenTicketIds={setHiddenKitchenTicketIds}
             kitchenTicketProgress={kitchenTicketProgress}
