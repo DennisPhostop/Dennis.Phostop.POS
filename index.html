@@ -1092,6 +1092,35 @@
         };
       }
 
+      function clearUnpaidOrdersForNewDay(
+        current,
+        now = new Date().toISOString(),
+        cancelledBy = "System",
+        cancelReason = "Automatic new-day cleanup of unpaid orders"
+      ) {
+        const unpaidIds = new Set((current.orders || [])
+          .filter((order) => order.id && !["Paid", "Cancelled"].includes(order.status))
+          .map((order) => order.id));
+        if (!unpaidIds.size) return current;
+        return {
+          ...current,
+          orders: (current.orders || []).map((order) => unpaidIds.has(order.id)
+            ? {
+                ...order,
+                status: "Cancelled",
+                cancelledAt: now,
+                updatedAt: now,
+                cancelledBy,
+                cancelReason,
+                items: [],
+              }
+            : order),
+          tables: (current.tables || []).map((table) => unpaidIds.has(table.orderId)
+            ? { ...table, status: "Available", orderId: null }
+            : table),
+        };
+      }
+
       function compactStateForStorage(current) {
         return {
           ...current,
@@ -2804,11 +2833,14 @@
 
         useEffect(() => {
           if (!mainPosHost || (hasCloudConfig(cloudConfig) && !kdsInitialLoadResolved)) return;
-          if (safeStorageGet(EMPTY_ORDERS_CLEANED_DAY_KEY) === businessDay) return;
-          // Mark this device's business day once, then cancel only empty active
-          // orders. Held tabs, food orders, payments, and KDS history are kept.
+          const lastCleanedDay = safeStorageGet(EMPTY_ORDERS_CLEANED_DAY_KEY);
+          if (lastCleanedDay === businessDay) return;
+          // Establish a baseline on first use so upgrading mid-day does not
+          // unexpectedly clear today's orders. On later day changes, clear all
+          // unpaid orders while keeping paid Sales history untouched.
           safeStorageSet(EMPTY_ORDERS_CLEANED_DAY_KEY, businessDay);
-          setState((current) => clearEmptyOpenOrders(current));
+          if (!lastCleanedDay) return;
+          setState((current) => clearUnpaidOrdersForNewDay(current));
         }, [businessDay, mainPosHost, cloudConfig, kdsInitialLoadResolved, setState]);
 
         function clearEmptyOrdersManually() {
